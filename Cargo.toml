@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/lss-core", "crates/lss-collector", "crates/lss"]
+
+[workspace.package]
+version = "1.2.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# card #308: "tls" = rustls on the pure-Rust *ring* backend (no OpenSSL), so https engine URLs
+# work and the static musl builds stay static. Root certificates: see crates/lss-collector/src/tls.rs.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+lss-core = { path = "crates/lss-core" }
+
+[profile.release]
+opt-level = 2
+strip = true
+lto = "thin"

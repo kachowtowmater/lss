@@ -1,0 +1,15 @@
+# Runs lss-watch.service on a sane interval. Card #74's own Done line said "hourly is plenty" -
+# a fixed hourly cadence, not tied to any other schedule (the collector's poll loop, a bench run).
+#   install:  cp packaging/lss-watch.service packaging/lss-watch.timer ~/.config/systemd/user/
+#             systemctl --user daemon-reload && systemctl --user enable --now lss-watch.timer
+[Unit]
+Description=Hourly trigger for the LLM SERVER STATUS watch sweep (card #74)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+# a missed run (the box was off) fires once at the next boot instead of waiting a full hour
+Persistent=true
+
+[Install]
+WantedBy=timers.target

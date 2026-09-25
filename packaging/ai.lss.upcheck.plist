@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LLM SERVER STATUS up-check: the seat asks the GPU box "are you there?" every 60 s.
+     install:  scripts/install-upcheck.sh   (refuses to install with no serve target; prints the
+               URLs it installed. It reads ~/.config/lss/upcheck.env or LSS_UPCHECK_SERVE_URL /
+               LSS_UPCHECK_COLLECTOR_URL from the environment.)
+               by hand:  cp scripts/lss-upcheck.sh ~/.local/bin/ && cp packaging/ai.lss.upcheck.plist ~/Library/LaunchAgents/
+                         sed -i '' "s|__HOME__|$HOME|g" ~/Library/LaunchAgents/ai.lss.upcheck.plist
+                         launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.lss.upcheck.plist
+     remove:   launchctl bootout gui/$(id -u)/ai.lss.upcheck
+     No target is guessed: with LSS_UPCHECK_SERVE_URL unset the serve leg is skipped and reported
+     as serve=unset - never probed against an invented port, never a false "serve down".
+     __HOME__ below is a placeholder; scripts/install-upcheck.sh writes your home directory in. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.lss.upcheck</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HOME__/.local/bin/lss-upcheck.sh</string>
+  </array>
+  <key>StartInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>__HOME__/.local/state/lss/upcheck.launchd.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.local/state/lss/upcheck.launchd.log</string>
+</dict>
+</plist>

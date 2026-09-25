@@ -1,0 +1,20 @@
+ LLM SERVER STATUS · gpu-box · model-a · UP 36m54s · $0.42/h               refreshed ##:##:## 
+ TARGETS 24h first word 96% · speed 94% · no wait 97% · up 99.95%                             
+┏ o SERVE (UP 36m54s) ━━━━━━━━┓┌ o GPUS (4 · 57 W) ──────────┐┌ o LANES (gate v5) ───────────┐
+┃write 412.5 tok/s    ▁▁▁▁███▁┃│GPU0* 52C/126F  ▄▆▆  19W   0%││public   run 0 q 0 w 0        │
+┃read  4180 tok/s     ▁▁▁▁██▁▁┃│GPU1  42C/108F  ▃▅▅  15W   0%││  10 min 2xx 14 4xx 10 5xx 0  │
+┃run [##------] 2/8  q 0      ┃│GPU2  47C/117F  ▃▅▅  13W   0%││trusted  run 0 q 0 w 0        │
+┃KV 12.3%  TTFT 183ms/2.0s    ┃│GPU3  46C/115F  ▃▅▅  11W   0%││  10 min 2xx 7 4xx 3 5xx 0    │
+┃C1 191.7 tok/s 2m03s (1 inv) ┃│total 57/1200 W  util 0%     ││gate UP v5 · 413 1 · 429 0    │
+┃accept 3.10  cache 45.2%     ┃└─────────────────────────────┘│probes: 3 excluded            │
+┃ITL 3.2ms  e2e 2.0s/19.0s    ┃┌ o ADVICE (all fine) ────────┐└──────────────────────────────┘
+┃q wait 0.6ms/46ms            ┃│FINE  All 8 slots were busy  │┌ o USERS (2 now · 3 in 24h) ──┐
+┃C1 alert < 152.4             ┃│      0.6% of the week - no  ││2 now · 2 10m · 3 24h         │
+┃tok in 507.0k out 1.0k       ┃│      capacity problem.      ││slots [##------] 2/8 in use   │
+┃writing tok/s · last hour    ┃│FINE  Memory (KV) peaked at  ││acme       2 running          │
+┃410┤                 ████    ┃│      33% (p95 14%) -        ││laptop     1 running          │
+┃  0┤        ▁▁▁▁▁▁▁▁▁████▁▁▁▁┃│      comfortable.           ││office     idle               │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└─────────────────────────────┘└──────────────────────────────┘
+ INCIDENTS 4 in 7d · last ##-## ##:## container_restart   enter >                             
+ ALERTS none firing · last ##-## ##:## serve_down   enter >                                   
+[ 0] 1 2 3 4 5 6 7 8 9 a                                                               ? help 

@@ -1,0 +1,60 @@
+#!/usr/bin/expect -f
+# Answers the installer's interactive wizard like a person at a terminal would (card #296).
+#
+#   wizard.exp <timeout-secs> <engine-url> <zip> <command...>
+#
+# <command> is run under a pseudo-terminal, so `curl ... | bash` works exactly as it does for a
+# person: the script arrives on stdin, the questions are answered on /dev/tty.
+#
+# THE CONTRACT the wizard must meet (scripts/e2e/README.md repeats it):
+#   * a yes/no question about looking the location up by IP  <- "n" (never consented in a test)
+#   * a yes/no question about tracking electricity cost      <- "y"
+#   * a one-line menu of cost methods, "zip / manual / skip"  <- the word "zip"
+#     (a multi-line menu whose last line is "Choice [zip]:" gets Enter, i.e. its default)
+#   * a question asking for a "ZIP code" (or ending "ZIP:")  <- the ZIP
+#   * a question asking for an API key                       <- an empty answer (none)
+#   * a question asking for the engine/server URL or address <- the fake engine's URL
+#   * any other [Y/n], [y/N] or [default] question            <- Enter (its default)
+# The patterns are tried in that order against the LAST line of output (the open question).
+# Any question that is still unanswered after <timeout> seconds is a FAIL: the transcript's last
+# lines are printed as WIZARD-STUCK so the next builder sees exactly which prompt it was.
+# Every answer is echoed as a "WIZARD-ANSWER" line.
+log_user 1
+set timeout [lindex $argv 0]
+set url [lindex $argv 1]
+set zip [lindex $argv 2]
+set cmd [lrange $argv 3 end]
+set answered 0
+eval spawn -noecho $cmd
+
+proc answer {what reply} {
+    global answered
+    incr answered
+    send_user "\nWIZARD-ANSWER $answered: $what -> '$reply'\n"
+    send -- "$reply\r"
+}
+
+expect {
+    -nocase -re {\mip\M[^\n]{0,60}(look ?up|locat)[^\n]*\[y/n\][^\n]*$} { answer "IP-lookup consent" "n"; exp_continue }
+    -nocase -re {(locat|look ?up)[^\n]{0,60}\mip\M[^\n]*\[y/n\][^\n]*$} { answer "IP-lookup consent" "n"; exp_continue }
+    -nocase -re {(track|electricity|cost)[^\n]*\[y/n\] *$} { answer "track cost" "y"; exp_continue }
+    -nocase -re {zip[^\n]{0,3}[/,|][^\n]*(manual|skip|kwh)[^\n]*[:?\]>] *$} { answer "cost-method menu" "zip"; exp_continue }
+    -nocase -re {zip code[^\n]*[:?\]>] *$} { answer "ZIP code" $zip; exp_continue }
+    -nocase -re {\mzip\M[^][\n]*[:?>] *$} { answer "ZIP code" $zip; exp_continue }
+    -nocase -re {(api[ _-]?key|bearer token|access token)[^\n]*[:?\]>] *$} { answer "API key" ""; exp_continue }
+    -nocase -re {(engine|server|inference)[^\n]*(url|address)[^\n]*[:?\]>] *$} { answer "engine URL" $url; exp_continue }
+    -re {\[Y/n\] *$} { answer "yes/no (default yes)" ""; exp_continue }
+    -re {\[y/N\] *$} { answer "yes/no (default no)" ""; exp_continue }
+    -re {\[[^]\n]*\] *$} { answer "question with a default" ""; exp_continue }
+    timeout {
+        set tail ""
+        # on a timeout the unmatched output is still in the buffer: take it with a zero-wait match
+        expect -timeout 0 -re {(.|\n)+$} { set tail [string range $expect_out(0,string) end-400 end] }
+        send_user "\nWIZARD-STUCK after $answered answers: no answerable prompt for [lindex $argv 0]s. Last output:\n$tail\n"
+        exit 3
+    }
+    eof {}
+}
+set status [lindex [wait] 3]
+send_user "\nWIZARD-EXIT $status after $answered answers\n"
+exit $status

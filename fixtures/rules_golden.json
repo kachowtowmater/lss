@@ -1,0 +1,335 @@
+{
+  "v": 1,
+  "generated_at": 1789820000,
+  "rules": [
+    {
+      "rule": "serve_down",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "serve down >= 2m00s",
+      "value": "up",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "serve_down_page",
+      "severity": "page",
+      "state": "ok",
+      "threshold": "serve down >= 15m00s",
+      "value": "up",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "gate_down",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "gate down >= 2m00s",
+      "value": "up",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "gate_charge_errors",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "gate charge_errors > 0 for >= 1m00s",
+      "value": "no reading",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "gate_discount_inert",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "warm cache + >= 50 admissions + 0 discounted for >= 10m00s",
+      "value": "no reading",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "queue_pressure",
+      "severity": "warn",
+      "state": "pending",
+      "threshold": "queue >= 24 for 2m00s",
+      "value": "queue 30",
+      "pending_since": 1789819940,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "gate_waiters",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "trusted waiters > 0 for 5m00s",
+      "value": "waiters 0",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "gpu_missing",
+      "severity": "hardware",
+      "state": "ok",
+      "threshold": "GPUs < 4 for 1m00s",
+      "value": "4 of 4",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "omp_default_mismatch",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "omp default != served for 10m00s",
+      "value": "in sync",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "disk_full",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "/ >= 90% used for 1m00s (recovers below 88%)",
+      "value": "no reading",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "disk_full_page",
+      "severity": "page",
+      "state": "ok",
+      "threshold": "/ >= 97% used for 1m00s (recovers below 95%)",
+      "value": "no reading",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "thermal_temp:gpu0",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": ">= 90C/194F for 10m00s (excluded: daily digest only)",
+      "value": "61C/142F",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "thermal_throttle:gpu0",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "thermal slowdown for 10m00s (excluded: daily digest only)",
+      "value": "none",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "thermal_temp:gpu1",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": ">= 90C/194F for 10m00s",
+      "value": "61C/142F",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "thermal_throttle:gpu1",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "thermal slowdown for 10m00s",
+      "value": "none",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "thermal_temp:gpu2",
+      "severity": "warn",
+      "state": "firing",
+      "threshold": ">= 90C/194F for 10m00s",
+      "value": "93C/199F",
+      "pending_since": 1789819340,
+      "last_fired": 1789819940,
+      "cooldown_remaining_s": 1740
+    },
+    {
+      "rule": "thermal_throttle:gpu2",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "thermal slowdown for 10m00s",
+      "value": "none",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "thermal_temp:gpu3",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": ">= 90C/194F for 10m00s",
+      "value": "61C/142F",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "thermal_throttle:gpu3",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "thermal slowdown for 10m00s",
+      "value": "none",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "c1_decode",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "learning the baseline (1/12)",
+      "value": "191.7 tok/s, 0 low in a row",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "c1_stale",
+      "severity": "info",
+      "state": "pending",
+      "threshold": "no VALID idle reading for 6 probe intervals",
+      "value": "last valid 2m40s ago",
+      "pending_since": 1789819850,
+      "last_fired": 1789819650,
+      "cooldown_remaining_s": 1450
+    },
+    {
+      "rule": "rejects_413",
+      "severity": "info",
+      "state": "ok",
+      "threshold": "rejected_413 grows > 20 in 10m00s",
+      "value": "+0",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "rejects_429",
+      "severity": "info",
+      "state": "ok",
+      "threshold": "rejected_429 grows > 20 in 10m00s",
+      "value": "+0",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "container_restart:serve",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "any container restart",
+      "value": "-",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "container_restart:gate",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "any container restart",
+      "value": "-",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "xid:*",
+      "severity": "hardware",
+      "state": "ok",
+      "threshold": "any NVRM Xid in the kernel log",
+      "value": "-",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
+      "rule": "thermal_digest",
+      "severity": "info",
+      "state": "ok",
+      "threshold": "daily summary of the excluded GPUs",
+      "value": "-",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    }
+  ],
+  "firing": [
+    "thermal_temp:gpu2"
+  ],
+  "spool_depth": 2,
+  "alerts": [
+    {
+      "id": 2,
+      "ts": 1789818055,
+      "rule": "serve_down",
+      "severity": "warn",
+      "message": "RECOVERED: serve recovered after 10m50s down",
+      "recovered": true,
+      "delivered": true
+    },
+    {
+      "id": 1,
+      "ts": 1789817525,
+      "rule": "serve_down",
+      "severity": "warn",
+      "message": "serve DOWN for 2m05s (/v1/models not answering)",
+      "recovered": false,
+      "delivered": true
+    }
+  ],
+  "incidents": [
+    {
+      "id": 4,
+      "start": 1789817789,
+      "end": 1789817789,
+      "kind": "container_restart",
+      "detail": "model-a-sglang-sm120 new StartedAt (previous run lasted 3d14h)"
+    },
+    {
+      "id": 3,
+      "start": 1789817400,
+      "end": 1789818050,
+      "kind": "serve_down",
+      "detail": "/v1/models: connection refused"
+    },
+    {
+      "id": 2,
+      "start": 1789791777,
+      "end": 1789791777,
+      "kind": "xid",
+      "detail": "GPU3 Xid 8 (GPU stopped processing (hang / watchdog)) pid=3177412, name=python3, channel 0x00000004"
+    },
+    {
+      "id": 1,
+      "start": 1789679648,
+      "end": 1789679648,
+      "kind": "xid",
+      "detail": "GPU1 Xid 8 (GPU stopped processing (hang / watchdog)) pid=569804, name=python3, channel 0x00000005"
+    }
+  ],
+  "uptime": {
+    "h24": 0.99248,
+    "d7": 0.99749,
+    "since": 1789560800
+  }
+}

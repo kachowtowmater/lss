@@ -1,0 +1,8 @@
+2026-09-17T14:14:08-07:00 gpu-box kernel: NVRM: Xid (PCI:0000:21:00): 8, pid=569804, name=python3, channel 0x00000005
+2026-09-17T14:14:09-07:00 gpu-box kernel: NVRM: GPU at PCI:0000:21:00: GPU-00000000-0000-0000-0000-000000000000
+2026-09-18T21:22:57-07:00 gpu-box kernel: NVRM: Xid (PCI:0000:f1:00): 8, pid=3177412, name=python3, channel 0x00000004
+2026-09-18T21:23:01-07:00 gpu-box kernel: nvidia-modeset: WARNING: GPU:0: Lost display notification
+2026-09-18T22:00:00-0700 gpu-box kernel: NVRM: Xid (PCI:0000:01:00): 79, GPU has fallen off the bus.
+2026-09-18T22:05:10-07:00 gpu-box kernel: NVRM: Xid (PCI:0000:d1:00): 119, pid=4242, name=python3, Timeout after 6s of waiting for RPC response from GPU2 GSP!
+2026-09-18T22:06:00-07:00 gpu-box kernel: NVRM: Xid (PCI:0000:99:00): 31, pid=77, name=x, Ch 00000003, intr 10000000. MMU Fault
+2026-09-18T22:07:00-07:00 gpu-box kernel: usb 1-1: new high-speed USB device number 5 using xhci_hcd

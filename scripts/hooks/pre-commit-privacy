@@ -1,0 +1,115 @@
+#!/bin/bash
+# Pre-commit hook for the privacy scan (card #99, the surviving item from #95): a site name,
+# a host name or the owner's name in a doc comment is caught AT COMMIT TIME, not by a
+# verifier who happens to measure the working tree.
+#
+# Install (once per clone, card #166 - a fresh clone has this FILE but nothing wires it into
+# git until this runs):
+#   scripts/install-privacy-hook.sh
+# By hand, the same thing that script does:
+#   printf '#!/bin/sh\n[ -x scripts/hooks/pre-commit-privacy ] && exec bash "$(git rev-parse --show-toplevel)/scripts/hooks/pre-commit-privacy" "$@"\n' > "$(git rev-parse --git-path hooks)/pre-commit"
+#   chmod +x "$(git rev-parse --git-path hooks)/pre-commit" scripts/hooks/pre-commit-privacy
+# (on THIS seat specifically, a global core.hooksPath hook also chains the repo-local
+# .git/hooks/pre-commit automatically - that is this machine's own config, not something a
+# fresh clone gets for free; the install step above is what makes it work anywhere.)
+#
+#   SKIP_PRIVACY_SCAN=1   loud bypass for the rare deliberate case (printed, not silent);
+#                         plain `git commit --no-verify` also skips - the pre-push hook
+#                         and CI are the binding layer for that escape.
+#
+# WHAT IS SCANNED: only STAGED files, and never the paths the public export excludes anyway
+# (gate/*, site/ours/*, .privacy-words - keep this list in step with excluded() in
+# scripts/export-public.sh, which is the single source of truth for "what ships"). A bare
+# `bash scripts/privacy-check.sh .` over the whole repo legitimately exits 1 (gate/tests'
+# fake IPs, gate/DEPLOY.md's real deploy vocabulary) - scoping here is what keeps the hook
+# from blocking every commit while still guarding everything that could be published.
+#
+# WORD LIST: the COMMITTED fallback (packaging/privacy-words.example) is always used, never
+# a personal .privacy-words - commit behavior must not depend on this seat's private file.
+
+set -euo pipefail
+
+if [ "${SKIP_PRIVACY_SCAN:-0}" = "1" ]; then
+    echo "pre-commit-privacy: SKIP_PRIVACY_SCAN=1 - privacy scan bypassed for this commit (LOUD bypass, logged here only)" >&2
+    exit 0
+fi
+
+repo="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+cd "$repo"
+
+# staged, non-deleted files (added/copied/modified/renamed)
+staged=$(git diff --cached --name-only --diff-filter=ACMR || true)
+[ -n "$staged" ] && [ "$staged" != "" ] || exit 0
+
+# the export's exclusion list (keep in step with excluded() in scripts/export-public.sh):
+# gate/* and site/* never ship, and .privacy-words is personal.
+scan_list=""
+while IFS= read -r f; do
+    case "$f" in
+        gate/*|site/*|.privacy-words) continue ;;
+    esac
+    # card #148: test the INDEX, not the working tree. Everything else here reads the index
+    # (`git show ":$f"` below), but this line used `[ -f "$f" ]` - a WORKING-TREE test - so a file
+    # that was staged and then deleted from the tree (`git rm --cached`-less: `rm f` after
+    # `git add f`) skipped the scan and the commit went through with the private word still in
+    # the index. `git cat-file -e ":$f"` asks the index the same question the read below assumes
+    # the answer to. Reproduced three times by verifier-3 on three HEADs before this fix.
+    git cat-file -e ":$f" 2>/dev/null || continue
+    scan_list="$scan_list$f
+"
+done <<<"$staged"
+if [ -z "$scan_list" ] || [ "$scan_list" = "
+" ]; then
+    exit 0  # nothing that ships is staged
+fi
+
+# stage the files into a temp tree at their real paths, then scan that tree
+tmp="$(mktemp -d /tmp/pre-commit-privacy.XXXXXX)"
+trap 'rm -rf "$tmp"' EXIT
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    mkdir -p "$tmp/$(dirname "$f")"
+    git show ":$f" > "$tmp/$f"
+done <<<"$scan_list"
+
+# card #99 item 5 (verifier-2's corrected requirement): use the checkout's OWN
+# .privacy-words WHEN PRESENT - it is where the host names and the owner's name that caused
+# #95 and #15/#42 live - and fall back to the committed example when it is not. Say which
+# list is in force on stderr, so the operator knows what the scan can actually see.
+# card #180 gate 4: a git WORKTREE has no .privacy-words of its own (a git-ignored file lives
+# in one checkout only), and every worker commits from a worktree - so every one of those commits
+# was scanned with the generic list, and the owner's name shipped in eight comments that way.
+# Next in line, before the generic list: the MAIN checkout that owns this worktree. The same goes
+# for the numeric net's rates file.
+common="$(cd "$repo" && git rev-parse --git-common-dir 2>/dev/null || true)"
+case "$common" in
+    "") main_top="" ;;
+    /*) main_top="$(dirname "$common")" ;;
+    *) main_top="$(cd "$repo/$(dirname "$common")" 2>/dev/null && pwd || true)" ;;
+esac
+words="$repo/.privacy-words"
+source_desc="$words"
+if [ ! -f "$words" ] && [ -n "$main_top" ] && [ "$main_top" != "$repo" ] && [ -f "$main_top/.privacy-words" ]; then
+    words="$main_top/.privacy-words"
+    source_desc="$words (the main checkout's list - this worktree has none of its own)"
+fi
+if [ ! -f "$words" ]; then
+    words="$repo/packaging/privacy-words.example"
+    source_desc="$words (committed fallback - no .privacy-words in this checkout)"
+fi
+if [ -z "${LSS_RATES:-}" ]; then
+    for rf in "$repo/site/ours/rates.toml" "${main_top:+$main_top/site/ours/rates.toml}"; do
+        if [ -n "$rf" ] && [ -f "$rf" ]; then export LSS_RATES="$rf"; break; fi
+    done
+fi
+
+if out=$(PRIVACY_WORDS="$words" \
+         bash "$repo/scripts/privacy-check.sh" "$tmp" 2>&1); then
+    echo "pre-commit-privacy: clean (word list in force: $source_desc)" >&2
+    exit 0
+fi
+echo "pre-commit-privacy: word list in force: $source_desc" >&2
+echo "pre-commit-privacy: BLOCKED - staged changes contain private data (commit NOT created):" >&2
+printf '%s\n' "$out" | sed 's/^/    /' >&2
+echo "pre-commit-privacy: fix the hits, or commit with SKIP_PRIVACY_SCAN=1 (loud bypass) for the rare deliberate case." >&2
+exit 1

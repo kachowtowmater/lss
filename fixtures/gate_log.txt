@@ -1,0 +1,92 @@
+2026-09-19T11:41:11.100432386Z {"event": "started", "version": "v5", "trusted_port": 8096, "public_port": 8097, "upstreams": {"gpu-box": "http://127.0.0.1:8090"}}
+2026-09-19T11:41:11.100495965Z {"event": "priority_config", "stamp_priority": true, "priority_public": 10, "priority_trusted": 0, "note": "public outranks trusted by design (paying caller > our own agents); requires --disable-priority-preemption on the engine"}
+2026-09-19T11:41:48.013394793Z {"t": "2026-09-19T11:41:48+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:41:48.013857178Z 127.0.0.1 [19/Sep/2026:11:41:13 +0000] "POST /v1/chat/completions HTTP/1.1" 200 768 "-" "curl/8.5.0"
+2026-09-19T11:41:48.070064373Z {"t": "2026-09-19T11:41:48+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "reject-prompt-tokens", "status": 413, "estimated_tokens": 1150022}
+2026-09-19T11:41:48.070464908Z 127.0.0.1 [19/Sep/2026:11:41:48 +0000] "POST /v1/chat/completions HTTP/1.1" 413 336 "-" "curl/8.5.0"
+2026-09-19T11:44:05.357051758Z 127.0.0.1 [19/Sep/2026:11:44:05 +0000] "GET /gate/health HTTP/1.1" 200 582 "-" "curl/8.5.0"
+2026-09-19T11:46:46.236999441Z {"t": "2026-09-19T11:46:46+0000", "caller": "trusted", "key": null, "ip": "192.0.2.10", "method": "GET", "path": "/v1/models", "model": null, "verdict": "pass", "status": 200}
+2026-09-19T11:46:46.237194408Z 192.0.2.10 [19/Sep/2026:11:46:46 +0000] "GET /v1/models HTTP/1.1" 200 329 "-" "curl/8.7.1"
+2026-09-19T11:50:03.100000000Z {"t": "2026-09-19T11:50:03+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:50:03.100000900Z 203.0.113.5 [19/Sep/2026:11:50:03 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:06.100000000Z {"t": "2026-09-19T11:50:06+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:50:06.100000900Z 203.0.113.5 [19/Sep/2026:11:50:06 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:09.100000000Z {"t": "2026-09-19T11:50:09+0000", "caller": "public", "key": "key-b", "ip": "203.0.113.6", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:50:09.100000900Z 203.0.113.6 [19/Sep/2026:11:50:09 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:12.100000000Z {"t": "2026-09-19T11:50:12+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "reject-concurrency", "status": 429}
+2026-09-19T11:50:12.100000900Z 203.0.113.5 [19/Sep/2026:11:50:12 +0000] "POST /v1/chat/completions HTTP/1.1" 429 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:15.100000000Z {"t": "2026-09-19T11:50:15+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:50:15.100000900Z 203.0.113.5 [19/Sep/2026:11:50:15 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:18.100000000Z {"t": "2026-09-19T11:50:18+0000", "caller": "public", "key": "key-b", "ip": "203.0.113.6", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "reject-json", "status": 400}
+2026-09-19T11:50:18.100000900Z 203.0.113.5 [19/Sep/2026:11:50:18 +0000] "POST /v1/chat/completions HTTP/1.1" 400 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:21.100000000Z {"t": "2026-09-19T11:50:21+0000", "caller": "public", "key": "canary", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:50:21.100000900Z 203.0.113.5 [19/Sep/2026:11:50:21 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:24.100000000Z {"t": "2026-09-19T11:50:24+0000", "caller": "public", "key": "key-b", "ip": "203.0.113.6", "method": "POST", "path": "/v1/chat/completions", "model": "gpt-4o", "verdict": "reject-model", "status": 404}
+2026-09-19T11:50:24.100000900Z 203.0.113.6 [19/Sep/2026:11:50:24 +0000] "POST /v1/chat/completions HTTP/1.1" 404 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:27.100000000Z {"t": "2026-09-19T11:50:27+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "client-closed", "status": 499}
+2026-09-19T11:50:27.100000900Z 203.0.113.5 [19/Sep/2026:11:50:27 +0000] "POST /v1/chat/completions HTTP/1.1" 499 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:30.100000000Z {"t": "2026-09-19T11:50:30+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "reject-prompt-tokens", "status": 413, "estimated_tokens": 300112}
+2026-09-19T11:50:30.100000900Z 203.0.113.5 [19/Sep/2026:11:50:30 +0000] "POST /v1/chat/completions HTTP/1.1" 413 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:33.100000000Z {"t": "2026-09-19T11:50:33+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:50:33.100000900Z 127.0.0.1 [19/Sep/2026:11:50:33 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:36.100000000Z {"t": "2026-09-19T11:50:36+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:50:36.100000900Z 127.0.0.1 [19/Sep/2026:11:50:36 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:39.100000000Z {"t": "2026-09-19T11:50:39+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/messages", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:50:39.100000900Z 127.0.0.1 [19/Sep/2026:11:50:39 +0000] "POST /v1/messages HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:42.100000000Z {"t": "2026-09-19T11:50:42+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "reject-budget", "status": 429, "estimated_tokens": 380000}
+2026-09-19T11:50:42.100000900Z 127.0.0.1 [19/Sep/2026:11:50:42 +0000] "POST /v1/chat/completions HTTP/1.1" 429 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:45.100000000Z {"t": "2026-09-19T11:50:45+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "upstream-error", "status": 502}
+2026-09-19T11:50:45.100000900Z 127.0.0.1 [19/Sep/2026:11:50:45 +0000] "POST /v1/chat/completions HTTP/1.1" 502 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:48.100000000Z {"t": "2026-09-19T11:50:48+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "upstream-down", "status": 503}
+2026-09-19T11:50:48.100000900Z 127.0.0.1 [19/Sep/2026:11:50:48 +0000] "POST /v1/chat/completions HTTP/1.1" 503 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:51.100000000Z {"t": "2026-09-19T11:50:51+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "max-duration", "status": 504}
+2026-09-19T11:50:51.100000900Z 127.0.0.1 [19/Sep/2026:11:50:51 +0000] "POST /v1/chat/completions HTTP/1.1" 504 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:54.100000000Z {"t": "2026-09-19T11:50:54+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:50:54.100000900Z 127.0.0.1 [19/Sep/2026:11:50:54 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:50:57.100000000Z {"t": "2026-09-19T11:50:57+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:50:57.100000900Z 203.0.113.5 [19/Sep/2026:11:50:57 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:00.100000000Z {"t": "2026-09-19T11:51:00+0000", "caller": "public", "key": "key-b", "ip": "203.0.113.6", "method": "POST", "path": "/v1/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:51:00.100000900Z 203.0.113.6 [19/Sep/2026:11:51:00 +0000] "POST /v1/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:03.100000001Z {"t": "2026-09-19T11:51:03+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:51:03.100000901Z 203.0.113.5 [19/Sep/2026:11:51:03 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:06.100000001Z {"t": "2026-09-19T11:51:06+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:51:06.100000901Z 203.0.113.5 [19/Sep/2026:11:51:06 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:09.100000001Z {"t": "2026-09-19T11:51:09+0000", "caller": "public", "key": "key-b", "ip": "203.0.113.6", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:51:09.100000901Z 203.0.113.6 [19/Sep/2026:11:51:09 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:12.100000001Z {"t": "2026-09-19T11:51:12+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "reject-concurrency", "status": 429}
+2026-09-19T11:51:12.100000901Z 203.0.113.5 [19/Sep/2026:11:51:12 +0000] "POST /v1/chat/completions HTTP/1.1" 429 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:15.100000001Z {"t": "2026-09-19T11:51:15+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:51:15.100000901Z 203.0.113.5 [19/Sep/2026:11:51:15 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:18.100000001Z {"t": "2026-09-19T11:51:18+0000", "caller": "public", "key": "key-b", "ip": "203.0.113.6", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "reject-json", "status": 400}
+2026-09-19T11:51:18.100000901Z 203.0.113.5 [19/Sep/2026:11:51:18 +0000] "POST /v1/chat/completions HTTP/1.1" 400 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:21.100000001Z {"t": "2026-09-19T11:51:21+0000", "caller": "public", "key": "canary", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:51:21.100000901Z 203.0.113.5 [19/Sep/2026:11:51:21 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:24.100000001Z {"t": "2026-09-19T11:51:24+0000", "caller": "public", "key": "key-b", "ip": "203.0.113.6", "method": "POST", "path": "/v1/chat/completions", "model": "gpt-4o", "verdict": "reject-model", "status": 404}
+2026-09-19T11:51:24.100000901Z 203.0.113.6 [19/Sep/2026:11:51:24 +0000] "POST /v1/chat/completions HTTP/1.1" 404 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:27.100000001Z {"t": "2026-09-19T11:51:27+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "client-closed", "status": 499}
+2026-09-19T11:51:27.100000901Z 203.0.113.5 [19/Sep/2026:11:51:27 +0000] "POST /v1/chat/completions HTTP/1.1" 499 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:30.100000001Z {"t": "2026-09-19T11:51:30+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "reject-prompt-tokens", "status": 413, "estimated_tokens": 300112}
+2026-09-19T11:51:30.100000901Z 203.0.113.5 [19/Sep/2026:11:51:30 +0000] "POST /v1/chat/completions HTTP/1.1" 413 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:33.100000001Z {"t": "2026-09-19T11:51:33+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:51:33.100000901Z 127.0.0.1 [19/Sep/2026:11:51:33 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:36.100000001Z {"t": "2026-09-19T11:51:36+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:51:36.100000901Z 127.0.0.1 [19/Sep/2026:11:51:36 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:39.100000001Z {"t": "2026-09-19T11:51:39+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/messages", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:51:39.100000901Z 127.0.0.1 [19/Sep/2026:11:51:39 +0000] "POST /v1/messages HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:42.100000001Z {"t": "2026-09-19T11:51:42+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "reject-budget", "status": 429, "estimated_tokens": 380000}
+2026-09-19T11:51:42.100000901Z 127.0.0.1 [19/Sep/2026:11:51:42 +0000] "POST /v1/chat/completions HTTP/1.1" 429 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:45.100000001Z {"t": "2026-09-19T11:51:45+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "upstream-error", "status": 502}
+2026-09-19T11:51:45.100000901Z 127.0.0.1 [19/Sep/2026:11:51:45 +0000] "POST /v1/chat/completions HTTP/1.1" 502 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:48.100000001Z {"t": "2026-09-19T11:51:48+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "upstream-down", "status": 503}
+2026-09-19T11:51:48.100000901Z 127.0.0.1 [19/Sep/2026:11:51:48 +0000] "POST /v1/chat/completions HTTP/1.1" 503 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:51.100000001Z {"t": "2026-09-19T11:51:51+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "max-duration", "status": 504}
+2026-09-19T11:51:51.100000901Z 127.0.0.1 [19/Sep/2026:11:51:51 +0000] "POST /v1/chat/completions HTTP/1.1" 504 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:54.100000001Z {"t": "2026-09-19T11:51:54+0000", "caller": "trusted", "key": null, "ip": "127.0.0.1", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:51:54.100000901Z 127.0.0.1 [19/Sep/2026:11:51:54 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:51:57.100000001Z {"t": "2026-09-19T11:51:57+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:51:57.100000901Z 203.0.113.5 [19/Sep/2026:11:51:57 +0000] "POST /v1/chat/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:52:00.100000001Z {"t": "2026-09-19T11:52:00+0000", "caller": "public", "key": "key-b", "ip": "203.0.113.6", "method": "POST", "path": "/v1/completions", "model": "model-a", "verdict": "pass", "status": 200}
+2026-09-19T11:52:00.100000901Z 203.0.113.6 [19/Sep/2026:11:52:00 +0000] "POST /v1/completions HTTP/1.1" 200 512 "-" "python-httpx/0.27"
+2026-09-19T11:59:00.000000001Z {"event": "priority_config", "stamp_priority": true}
+2026-09-19T11:59:01.000000001Z {"t": "2026-09-19T11:59:01+0000", "caller": "public", "key": "key-a", "ip": "203.0.113.5", "method": "POST", "path": "/v1/chat/completions", "model": "model-a", "verdict": "pass", "status": 200
+2026-09-19T11:59:02.000000001Z Traceback (most recent call last):

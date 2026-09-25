@@ -1,0 +1,46 @@
+target/
+__pycache__/
+*.pyc
+.venv/
+keys/
+keys.json
+*.db
+*.db-*
+.DS_Store
+.env*
+*.log
+.privacy-words
+
+# our own deployment (hosts, addresses, configs, plans) - never in the repo; backed up outside it
+site/ours/
+site/*/
+!site/example/
+
+# a Claude Code session's local state (settings.local.json, worktrees, memory) - per person, never shared
+.claude/
+
+# card #300: never commit a credential, a local database or a FILLED-IN config. Every file in
+# packaging/*.example is copied somewhere and edited with real hosts, keys and rates; if that copy
+# lands in the checkout it would otherwise be one `git add -A` from shipping. The .example
+# originals stay tracked (they do not match these names).
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+id_ecdsa*
+.netrc
+secrets/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.env
+collector.toml
+lss.toml
+rates.toml
+gate-env.conf
+watch.json
+watch-sources.txt
+ui.json
+*.local.*

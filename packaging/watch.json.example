@@ -1,0 +1,33 @@
+{
+  "//": "lss WATCH page (card #74) - copy to ~/.config/lss/watch.json and edit, or let a script write it (scripts/watch-check.sh is a generic starting point). This collector NEVER fetches anything to build this file itself: the sources you follow, and how often you check them, are entirely yours. Missing or unparsable = watch tracking is simply off, everywhere - no figure is ever guessed.",
+  "sources": [
+    {
+      "name": "Example Recipe Repo (FAKE)",
+      "covers": "what this source's recipes actually feed, in plain English - e.g. 'GLM loadouts on the GPU box'",
+      "last_checked": 1790000000,
+      "newest": {
+        "date": "2026-09-20",
+        "summary": "the item's real CONTENT, never a bare title - a sentence describing what actually changed, taken from the release/post body itself",
+        "url": "https://example.com/releases/v1.2.3",
+        "has_receipt": true
+      }
+    },
+    {
+      "name": "Example Social Account (FAKE)",
+      "covers": "reference only - a bare social post, not a source you build a loadout from",
+      "last_checked": 1790000000,
+      "newest": {
+        "date": "2026-09-19",
+        "summary": "a claim with no issue/PR/commit/file:line/HF id behind it - has_receipt is false, so this renders UNVERIFIED on screen, never as a finding",
+        "url": "",
+        "has_receipt": false
+      }
+    },
+    {
+      "name": "Example Never-Checked Source (FAKE)",
+      "covers": "a source you have configured but the check has not run for yet",
+      "last_checked": null,
+      "newest": null
+    }
+  ]
+}

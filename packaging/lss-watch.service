@@ -1,0 +1,21 @@
+# systemd USER unit for card #74's WATCH sweep: runs scripts/watch-check.sh once, then exits.
+# Triggered on a schedule by lss-watch.timer, not run continuously - see that file.
+#   install:  cp packaging/lss-watch.service packaging/lss-watch.timer ~/.config/systemd/user/
+#             systemctl --user daemon-reload && systemctl --user enable --now lss-watch.timer
+#   logs:     journalctl --user -u lss-watch -f
+# Needs ~/.config/lss/watch-sources.txt (packaging/watch-sources.txt.example is a starting
+# point); with none, or one that is empty/all-comments, this still runs cleanly and writes an
+# empty watch.json (card #116) - it is not an error to have nothing configured yet.
+[Unit]
+Description=LLM SERVER STATUS watch sweep (card #74: what your serving recipes' sources published)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/watch-check.sh
+# a sweep that hangs on a slow/unreachable API must not run forever between timer ticks
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lss-watch
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

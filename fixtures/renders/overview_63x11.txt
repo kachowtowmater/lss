@@ -1,0 +1,11 @@
+┏ o UP 36m54s (model-a · gpu-box) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃writing 412.5 tok/s    ▁▁▁██▁   reading 4180 tok/s    ▁▁▁██▁ ┃
+┃running [##------] 2/8 · queue 0 · memory (KV) 12.3%         ┃
+┃hottest GPU0 52°C / 126°F · 57 W · alerts none firing        ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+ USERS 2 now · 2 in 10m · 3 in 24h · slots 2/8 · acm…   enter >
+ GPUS 52/42/47/46C 126/108/117/115F · 57 W · util 0%   enter > 
+ LANES public 0r 0q 0w · trusted 0r 0q 0w · probes: 3   enter >
+ ADVICE FINE All 8 slots were busy 0.6% of the week…   enter > 
+ INCIDENTS 4 in 7d · alerts: none firing   enter >             
+[ 0] 1 2 3 4 5 6 7 8 9 a                                ? help 

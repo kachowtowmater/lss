@@ -1,0 +1,11 @@
+# Build/test image for LLM SERVER STATUS (for a GPU host that has docker but no cargo).
+# musl so the collector binary runs on the host whatever its glibc is.
+FROM rust:latest
+# jq: card #116's watch-check.sh regression test drives the real script, which needs jq (and
+# curl, already present in rust:latest) to run at all - without it here the test could only ever
+# exercise the "jq is required" early-exit, never the actual empty-source-list fix.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends musl-tools jq \
+ && rm -rf /var/lib/apt/lists/* \
+ && rustup target add x86_64-unknown-linux-musl \
+ && rustup component add clippy

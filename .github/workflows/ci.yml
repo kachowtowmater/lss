@@ -1,0 +1,116 @@
+# Private repo: minutes matter.
+#   * docs-only pushes never start a run (workflow-level path filter)
+#   * a newer push cancels the run before it (concurrency)
+#   * each job first asks "did my files change?" and skips its real work when they did not
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "fixtures/**"
+      - "packaging/**"
+      - "scripts/**"
+      - "install.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "fixtures/**"
+      - "packaging/**"
+      - "scripts/**"
+      - "install.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci.yml"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+
+jobs:
+  rust:
+    name: cargo test + clippy + shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # card #201: a commit that sets a file's blob back to a version it already held is invisible
+      # to a diff review - every line of the resurrected file looks like something somebody wrote
+      # on purpose, because somebody did, just earlier. One such commit left a test red on main for
+      # ~29 hours and undid a fix (a suite went from 1.00s to 121.59s) with nothing noticing.
+      # A STEP, not a job: it reads git and takes seconds, and this workflow's whole design is
+      # about not spending minutes. Ungated by the change filter below, because the defect is about
+      # the COMMIT RANGE rather than about which paths it touched.
+      - name: no commit resurrects a stale blob (card #201)
+        run: |
+          if git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            bash scripts/stale-blob-check.sh "$BASE_SHA..HEAD"
+          else
+            bash scripts/stale-blob-check.sh HEAD
+          fi
+      # card #302 CI hole: gate/ is in this filter too. Rust tests READ the gateway's files
+      # (gate_deploy_script.rs scans gate/gate.py for every env var it reads), so a gate/-only
+      # commit can break cargo test: #341 (cff8da5) added MODEL_ALIASES, main stayed green only
+      # because this job skipped, and the next merge went red. The export drops the alternative.
+      - name: Did Rust, fixtures, packaging or scripts change?
+        id: changed
+        run: |
+          if git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then files=$(git diff --name-only "$BASE_SHA" HEAD); else files=$(git ls-files); fi
+          if echo "$files" | grep -qE '^(crates/|fixtures/|packaging/|scripts/|install\.sh|Cargo\.|\.github/workflows/ci\.yml)'; then echo "run=true" >>"$GITHUB_OUTPUT"; else echo "run=false" >>"$GITHUB_OUTPUT"; fi
+      - name: shellcheck scripts/
+        if: steps.changed.outputs.run == 'true'
+        run: shellcheck --severity=warning scripts/*.sh install.sh
+      - uses: Swatinem/rust-cache@v2
+        if: steps.changed.outputs.run == 'true'
+      - name: cargo clippy -D warnings
+        if: steps.changed.outputs.run == 'true'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: cargo test
+        if: steps.changed.outputs.run == 'true'
+        run: cargo test --workspace --locked
+
+  # card #149 (PUBLIC BLOCKER): the acceptance command nobody had ever run. A stranger's first
+  # act is `cargo test`, and the EXPORTED copy - not this repo - is what they get. Measured
+  # 2026-09-22 before this job existed: the export failed 8 of 10 tests in one binary out of the
+  # box, because the gateway's deploy test read a gateway source file, and the whole gateway
+  # directory is deliberately dropped from the export.
+  # Without this job, "is main green" means nothing to anyone outside our own seat.
+  exported-tree:
+    name: the EXPORTED copy builds and tests green
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: export a public copy
+        # LSS_EXPORT_ALLOW_NO_WORDS: a CI checkout has no .privacy-words (it is git-ignored), and
+        # card #144 made a missing word list a refusal for anyone about to publish. Here we test
+        # the TREE, not the publish decision, and the export still prints what it could not
+        # check. The private-word guarantee is enforced here by the rust job's own
+        # in_the_real_tree_nothing_of_ours_is_left_to_find (card #166: there is no separate
+        # "privacy job" - that test runs inside `rust`, against the committed
+        # packaging/privacy-words.example fallback) and by scripts/export-public.sh's own
+        # fail-closed refusal at publish time.
+        run: LSS_EXPORT_ALLOW_NO_WORDS=1 bash scripts/export-public.sh "$RUNNER_TEMP/public"
+      - name: the exported copy must not carry what it cannot support
+        run: |
+          cd "$RUNNER_TEMP/public"
+          for gone in gate site scripts/gate-deploy.sh crates/lss-collector/tests/gate_deploy_script.rs packaging/gate-env.conf.example; do
+            if [ -e "$gone" ]; then echo "the export still ships $gone"; exit 1; fi
+          done
+      - name: cargo test --workspace, in the exported copy
+        working-directory: ${{ runner.temp }}/public
+        run: cargo test --workspace
+

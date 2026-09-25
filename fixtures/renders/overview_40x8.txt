@@ -1,0 +1,8 @@
+┏ o UP 36m54s (model-a · gpu-box) ━━━━━┓
+┃write 412.5 tok/s   read 4180 tok/s   ┃
+┃running 2/8 · queue 0                 ┃
+┃hottest GPU0 52C/126F · alerts 0      ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+ USERS 2 now · slots 2/8   enter >      
+ MORE queue 0 · advice FINE   enter >   
+[ 0] 1 2 3 4 5 6 7 8 9 a         ? help 

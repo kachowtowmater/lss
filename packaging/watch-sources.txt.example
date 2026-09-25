@@ -1,0 +1,13 @@
+# scripts/watch-check.sh's source list. Copy to ~/.config/lss/watch-sources.txt and edit -
+# these two rows are EXAMPLES, not defaults; card #116 shipped an hourly systemd timer that
+# runs against whatever is here (or nothing - an empty/comment-only file is fine, see below).
+#
+#   cp packaging/watch-sources.txt.example ~/.config/lss/watch-sources.txt
+#
+# One source per line, "|"-separated: <name>|<what this source's recipes actually feed, plain
+# English>|<owner>/<repo> on GitHub. Blank lines and lines starting with # are skipped - so a
+# file with nothing uncommented (the state right after this copy, until you edit it) is a valid
+# empty list: the WATCH page then shows nothing, not an error.
+#
+# sglang|serving engine releases (what we run the serve on)|sgl-project/sglang
+# vllm|the other major serving engine, for cross-checking release notes|vllm-project/vllm

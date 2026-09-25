@@ -1,0 +1,60 @@
+ LLM SERVER STATUS · gpu-box · model-a · UP 36m54s · $0.42/h   
+ TARGETS first word 96% · speed 94% · no wait 97% · up 99.95%  
+┏ o SERVE (UP 36m54s) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃writing (decode)    412.5 tok/s           ▁▁▁▁▁▁▁▁▁▁█████▁▁▁▁┃
+┃reading (prefill)    4180 tok/s           ▁▁▁▁▁▁▁▁▁▁█████▁▁▁▁┃
+┃running  [##------] 2/8   queue 0           ▁▁▁▁▁▁▁▁▄▄▄▄▄▁▁▁▁┃
+┃KV       [#-------] 12.3%              ▁▁▁▁▁▁▁▁▁▁▁▃▃▃▃▃▃▁▁▁▁▁┃
+┃TTFT     p50 183ms · p90 600ms · p99 2.0s (10 min)           ┃
+┃C1 probe 191.7 tok/s · 2m03s ago (1 invalid)                 ┃
+┃accept   3.10 (70%) · cache hit 45.2%                        ┃
+┃ITL      p50 3.2ms · p99 14ms   e2e p50 2.0s · p99 19.0s     ┃
+┃queue    wait p50 0.6ms · p99 46ms                           ┃
+┃C1 alert < 152.4 tok/s (80% of 190.5)                        ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┌ o GPUS (4 · 57 W) ──────────────────────────────────────────┐
+│┌──────────────┐┌─────────────┐┌─────────────┐┌─────────────┐│
+││GPU0*         ││GPU1         ││GPU2         ││GPU3         ││
+││52°C / 126°F  ││42°C / 108°F ││47°C / 117°F ││46°C / 115°F ││
+││19/300W · 0%  ││15/300W · 0% ││13/300W · 0% ││11/300W · 0% ││
+││93.3 GiB      ││93.3 GiB     ││93.3 GiB     ││93.3 GiB     ││
+││ok            ││ok           ││ok           ││ok           ││
+│└──────────────┘└─────────────┘└─────────────┘└─────────────┘│
+│total 57/1200 W  util 0%  * thermal alerts off               │
+└─────────────────────────────────────────────────────────────┘
+┌ o LANES (gate v5) ──────────────────────────────────────────┐
+│┌─────────────────────────────┐┌────────────────────────────┐│
+││public run 0 · q 0           ││trusted run 0 · q 0         ││
+││waiters 0  inflight 0 tok    ││waiters 0  inflight 0 of 100││
+││10m  2xx 14  4xx 10  5xx 0   ││10m  2xx 7  4xx 3  5xx 0    ││
+││keys key-a 14, key-b 8, can… ││keys (no key) 15            ││
+││rejected 413 0  429 0        ││rejected 413 1  429 0       ││
+│└─────────────────────────────┘└────────────────────────────┘│
+│gate UP v5  rejected 413 1  429 0  client closed 0  upstream…│
+│probes: 3 excluded (2 in 10 min) · codes = last 10 min       │
+│in-flight budget used · last hour                            │
+│100%┤                   ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▇▇▇▇▇▇▇▇█▁▁▁▁▁▁▁▁▁│
+└─────────────────────────────────────────────────────────────┘
+┌ o USERS (2 now · 3 in 24h) ─────────────────────────────────┐
+│active   2 now · 2 in 10 min · 3 in 24 h                     │
+│slots    [##------] 2/8  in use now                          │
+│acme            2 running  2100 req/24h                      │
+│laptop          1 running  388 req/24h                       │
+│office          idle       19 req/24h                        │
+└─────────────────────────────────────────────────────────────┘
+┌ o ADVICE (all fine) ────────────────────────────────────────┐
+│FINE  All 8 slots were busy 0.6% of the week - no capacity   │
+│      problem.                                               │
+│FINE  Memory (KV) peaked at 33% (p95 14%) - comfortable.     │
+└─────────────────────────────────────────────────────────────┘
+┌ o INCIDENTS (4 in 7d) ──────────────────────────────────────┐
+│##-## ##:## container_restart  model-a-sglang-sm120 new Star…│
+│##-## ##:## serve_down 10m50s  /v1/models: connection refused│
+│##-## ##:## xid  GPU3 Xid 8 (GPU stopped processing (hang /… │
+│##-## ##:## xid  GPU1 Xid 8 (GPU stopped processing (hang /… │
+└─────────────────────────────────────────────────────────────┘
+┌ o ALERTS (none firing) ─────────────────────────────────────┐
+│##-## ##:## warn     RECOVERED: serve recovered after 10m50s…│
+│##-## ##:## warn     serve DOWN for 2m05s (/v1/models not an…│
+└─────────────────────────────────────────────────────────────┘
+[ 0] 1 2 3 4 5 6 7 8 9 a                                ? help 

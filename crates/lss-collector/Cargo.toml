@@ -1,0 +1,25 @@
+[package]
+name = "lss-collector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+lss-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+ureq.workspace = true
+# card #308: the TLS client config the collector builds for engine/gateway URLs (tls.rs) - the
+# same rustls/roots ureq itself uses, plus the system's own store when it has one
+rustls.workspace = true
+webpki-roots = "0.26"
+rustls-native-certs = "0.7"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tiny_http = "0.12"
+libc = "0.2"
+
+[dev-dependencies]
+# card #308: throwaway certificates for the TLS fake engine in tls.rs's tests (never shipped)
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }

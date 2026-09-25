@@ -1,0 +1,151 @@
+# lss-collector configuration — copy to ~/.config/lss/collector.toml on the GPU box.
+# Every key is optional. The values below ARE the built-in defaults (a test keeps this
+# file honest), so an empty or missing file behaves exactly like this one.
+# Unknown keys are an error: a typo must not silently fall back to a default.
+
+host = ""                              # shown in /status and as the host label in /metrics; "" = this machine's host name
+poll_secs = 5
+engine_url = "auto"                    # the LLM server. "auto" = find it on this machine: `lss-collector --detect` shows what
+                                       # it finds and why (SGLang, vLLM, llama.cpp, Ollama, LM Studio, TGI, any OpenAI-compatible)
+engine_kind = "auto"                   # "auto" = recognise it | sglang | vllm | llamacpp | ollama | lmstudio | tgi | openai
+tls_verify = true                      # https engine/gateway URLs: check the certificate. false = accept ANY certificate (a LAN box with
+                                       # a self-signed one only; the collector warns at every start) - better: its CA in tls_ca_file
+tls_ca_file = ""                       # a PEM file to trust: a CA that signs your servers, OR a server's own self-signed certificate
+                                       # (pinned exactly). "" = the built-in Mozilla roots + this machine's store
+gate_url = ""                          # your gateway's TRUSTED listener, if you run one (health + the C1 probe). "" = no gateway: LANES / USERS /
+                                       # GATEWAY say so, and the probe talks to the engine directly
+serve_container = "auto"               # "auto" = whichever container publishes the engine's port; no docker = process uptime only
+serve_port = 0                         # 0 = the port in engine_url
+gate_container = ""
+slots = 0                              # running/slots denominator; 0 = ask the engine (SGLang, llama.cpp and TGI say; else set it)
+public_priority = "10"                 # SGLang priority label the gate stamps per lane
+trusted_priority = "0"
+listen = ["127.0.0.1:8099"]            # add your LAN / VPN address to reach it from another box; a failed bind is retried, never fatal
+db_path = "~/.local/state/lss/lss.db"
+raw_hours = 24                         # raw 5 s samples
+retention_days = 14                    # 1-minute rollups + latency histograms
+rollup_10m_days = 90                   # 10-minute rollups; also incidents, alerts, probes, gate-log rollup
+alert_cmd = "~/bin/lss-alert.sh"       # called as: alert_cmd <severity> <message>   (LSS_ALERT_ID, LSS_STATE_DIR in its env)
+                                       # install-collector.sh installs this file (~/bin/lss-alert.sh). install.sh
+                                       # instead writes alert_cmd = ~/.local/bin/lss-notify.sh and installs THAT
+                                       # (scripts/lss-notify.sh: ntfy / webhook / your own command - see
+                                       # packaging/alert.env.example). Either way alert_cmd is just a program
+                                       # taking <severity> <message>; this value must equal Config::default()
+                                       # for config::tests::the_shipped_example_config_parses_to_the_defaults
+alert_flush_secs = 300                 # also run `alert_cmd --flush` this often to retry spooled agent mail; 0 = never
+temp_units = "both"                     # temperatures in alert text: "both" = 47°C / 117°F · "c" · "f"
+# electricity_usd_per_kwh = 0.30       # what a kWh costs: the MODEL page then shows cost per 1M tokens. Unset = no cost shown
+tailscale_lookup = false               # name trusted-lane client addresses from `tailscale status --json` on this host
+
+# Live electricity cost from GPU watts (card #75): a SEPARATE file, never a value here - your
+# real rate table is the most personal thing this project ever asks for (utility, plan, home
+# location), so it stays out of this file and out of any repo. See packaging/rates.toml.example
+# to build it: a flat number, or a real time-of-use schedule if your utility has one.
+[rates]
+path = "~/.config/lss/rates.toml"      # "" = cost tracking off: no rates.toml, no cost figures anywhere
+
+# What the sources you actually follow for serving recipes have published, and when (card #74):
+# a SEPARATE file this collector only reads back, written by whatever you run on whatever
+# schedule you choose - scripts/watch-check.sh is a generic starting point. See
+# packaging/watch.json.example for the file's own shape.
+[watch]
+path = "~/.config/lss/watch.json"      # "" = watch tracking off: no file, no WATCH page content
+
+# Pin what --detect would find (wins over engine_url / engine_kind). This collector watches the
+# FIRST block; a second server on the same machine gets its own collector (docs/ENGINES.md).
+# [[engine]]
+# kind = "ollama"
+# url = "http://127.0.0.1:11434"      # https://… works too (see tls_verify / tls_ca_file above)
+# name = ""
+# tls_verify = false                  # this engine only (gate_url keeps the top-level one); unset = the top-level tls_verify
+
+[probe]
+enabled = true
+interval_secs = 300
+max_tokens = 128
+timeout_secs = 60
+prompt = "Write a detailed explanation of how a bicycle stays upright while moving. Use at least 200 words."
+
+[rules]
+cooldown_secs = 1800                   # per rule
+serve_down_secs = 120                  # warn
+serve_down_page_secs = 900             # escalate to page
+gate_down_secs = 120
+queue_reqs = 24.0                      # num_queue_reqs >= this ...
+queue_secs = 120                       # ... for this long
+waiters_secs = 300                     # gate trusted waiters > 0 for this long
+thermal_temp_c = 90.0
+thermal_secs = 600
+thermal_exclude = []                   # GPU indices that never raise a thermal alert; once-a-day digest instead
+gpu_missing_secs = 60
+disk_path = "/"                        # this box's filesystem to watch ("" = off): warn at disk_warn_pct used, page at disk_page_pct ...
+disk_warn_pct = 90.0
+disk_page_pct = 97.0
+disk_secs = 60                         # ... held this long; recovers disk_recover_margin_pct points below its line
+disk_recover_margin_pct = 2.0
+c1_ratio = 0.8                         # C1 alert when decode < c1_ratio x baseline ...
+c1_consecutive = 3                     # ... on this many idle probes in a row
+# c1_baseline_tok_s = 190.0            # unset = median of the first c1_baseline_probes probes
+c1_baseline_probes = 12
+c1_max_ttft_s = 3.0                    # a probe slower to first token than this was not alone: stored invalid, ignored
+reject_growth = 20                     # rejected_413 / rejected_429 growth ...
+reject_window_secs = 600               # ... inside this window (info)
+restart_stable_secs = 120              # up this long after a restart = "recovered"
+charge_errors_secs = 60                # gateway charge path raising for this long = warn: every request
+                                       # is charging GROSS prompt tokens (card #68's silent failure)
+discount_inert_secs = 600              # warm cache + traffic + ZERO discounts for this long = warn:
+                                       # the same fault with nothing raising anywhere
+discount_min_admissions = 50           # ... and only once the gate has seen this many recent admissions,
+                                       # so a quiet box never reads as broken
+
+# The service levels YOU want. The overview shows how much of the last 24 h met each one, the
+# MODEL page too, and ADVICE says when one is missed. 0 switches a target off.
+[targets]
+ttft_p95_s = 5.0                       # 95% of requests should get their first word within this many seconds
+min_tok_s_per_user = 30.0              # each user should be written to at least this fast (90% of tokens)
+max_queue_wait_s = 2.0                 # 95% of requests should wait less than this for a slot
+uptime_pct = 99.0                      # share of the time the server should answer
+
+# `lss bench`: the repeatable benchmark for every new model. It WRAPS llm_decode_bench.py
+# (github.com/local-inference-lab/llm-inference-bench); it is not part of this project.
+[bench]
+harness = ""                           # path of llm_decode_bench.py; "" = lss's built-in mini bench runs instead (same safety gates; docs/ENGINES.md "The benchmark without installing anything")
+python = "python3"                     # the interpreter that has the harness's dependencies (httpx, rich)
+launcher = []                          # argv put in front, e.g. ["systemd-run", "--user", "--scope", "--quiet", "--collect"]
+                                       # so the harness runs OUTSIDE the collector's memory-capped cgroup
+results_dir = "~/.local/state/lss/bench"   # the raw harness JSON of every run
+idle_secs = 300                        # the server must have been idle this long before a bench starts (unless --force)
+poll_secs = 2                          # safety poll while it runs: real traffic = abort
+quick_duration = 10                    # seconds per decode cell
+full_duration = 30
+quick_timeout_secs = 900               # hard stop per profile
+full_timeout_secs = 3600
+accuracy_timeout_secs = 21600
+needle_tokens = 250000                 # size of the long-context retrieval test (`full`)
+keep_runs = 50                         # raw result directories kept; the scorecards stay in the database
+
+# ADVICE thresholds: docs/ADVICE.md explains every rule. Percentages are of the window's time.
+[advice]
+slots_full_watch_pct = 5.0
+slots_full_act_pct = 20.0
+queue_watch_pct = 2.0
+queue_act_pct = 10.0
+kv_low_pct = 30.0
+kv_watch_pct = 80.0
+kv_act_pct = 95.0
+cache_low_pct = 20.0
+evictions_watch_per_hour = 1000000.0
+spec_low_accept = 1.5
+spec_drop_pct = 25.0
+context_unused_pct = 50.0
+rejects_watch_per_day = 5.0
+rejects_act_per_day = 50.0
+growth_watch_pct = 50.0
+throttle_watch_pct = 1.0
+throttle_act_pct = 10.0
+prefill_heavy_pct = 60.0
+
+# Friendly names for trusted-lane users (they are client addresses). Repeat the block per address.
+# [[user_alias]]
+# ip = "192.0.2.10"
+# name = "laptop"

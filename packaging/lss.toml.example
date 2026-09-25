@@ -1,0 +1,20 @@
+# ~/.config/lss/lss.toml: what the `lss` screen / CLI needs to know. Everything is optional:
+# this file shows the built-in defaults (a test keeps it honest). Unknown keys are an error.
+
+url = ""          # the collector. "" = http://127.0.0.1:8099 (lss on the GPU box itself).
+                  # From another machine: "http://<gpu-box>:8099". $LSS_URL and --url win over this.
+theme = ""        # "dark" | "light" for a first start; the screen remembers `T` after that
+temp_units = ""   # temperatures: "" or "both" = 47°C / 117°F · "c" · "f"
+bench_ssh = ""    # `lss bench` runs on the GPU box. From another machine, the ssh host to run it on
+                  # ("gpu-box"); "" = print the exact ssh command instead of running it
+
+# SEVERAL SERVERS: one [[server]] per collector. The screen starts on the first, `[` and `]`
+# switch between them, and a FLEET line shows every one (UP / DOWN and tok/s). `lss --server
+# NAME status` asks one of them from the command line. With [[server]] entries `url` is not used.
+# [[server]]
+# name = "big-box"
+# url = "http://big-box:8099"
+# bench_ssh = "big-box"          # optional: the ssh host `lss bench` runs on for THIS server
+# [[server]]
+# name = "spark-1"
+# url = "http://spark-1:8099"

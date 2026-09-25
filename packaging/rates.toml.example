@@ -1,0 +1,143 @@
+# lss electricity cost (card #75) — copy to ~/.config/lss/rates.toml and edit for YOUR utility.
+#
+# lss turns the GPU watt samples it already collects every 5 s into dollars, using the rate that
+# applies at each sample's OWN timestamp. If your plan is time-of-use (the rate depends on the
+# hour, the day of week, and the season), an average rate is a lie: on a real time-of-use plan a
+# 4-9pm summer weekday rate can be more than double the off-peak rate. Never invent a number here
+# - copy it from your own utility bill or rate-plan page, and re-check it whenever your utility
+# revises its tariff (that is what `effective_date` below is for: it is shown on every cost
+# figure lss displays, so a stale table stays visible, not silently trusted forever).
+#
+# Missing or unparsable file = cost tracking is simply off, everywhere. No figure is ever guessed.
+#
+# Don't want to write this by hand? `lss-collector cost-setup` asks for your ZIP code (your state's
+# average residential rate from a dated EIA table built into the binary - no network), OR looks
+# your state up from your IP (only if you say yes: one HTTPS request to ipinfo.io), OR takes the
+# $/kWh from your bill, and writes a flat version of this file for you. It adds three optional
+# lines saying where the rate came from; lss shows `source` next to every cost figure:
+#   source = "CA avg (EIA 2026-06)"          # short label shown by lss ("rate: ...")
+#   source_detail = "..."                    # the long form, for whoever reads this file
+#   source_url = "https://www.eia.gov/..."   # where the number was published
+#
+# ---------------------------------------------------------------------------------------------
+# OPTION 1 — flat rate: you pay the same $/kWh no matter the hour. Simplest, and honestly labelled
+# "flat" everywhere it is shown (never presented as if it were a real time-of-use schedule).
+# ---------------------------------------------------------------------------------------------
+name = "Example Flat Rate (FAKE NUMBERS)"
+effective_date = "2026-01-01"          # your utility's own effective date for this rate
+# a flat per-day charge your utility bills regardless of usage (a "customer charge" / "basic
+# service charge" on most bills) - shown for context, NEVER added into any per-hour/per-day
+# figure lss computes: a marginal cost must never pretend to be a full bill
+fixed_usd_per_day = 0.50
+
+[plan]
+kind = "flat"
+usd_per_kwh = 0.25                     # OBVIOUSLY FAKE - replace with your real rate
+
+# ---------------------------------------------------------------------------------------------
+# OPTION 2 — time-of-use: delete OPTION 1 above and uncomment this instead. The shape below has
+# the same 6 period-kinds a real utility's time-of-use table can have (summer on/mid/off-peak
+# split by weekday vs weekend/holiday; winter mid/super-off/off-peak, same all week) - every
+# number is FAKE, replace all of them from your own utility's current tariff, not a marketing
+# page (utility "rate comparison" pages have been seen serving stale numbers).
+# ---------------------------------------------------------------------------------------------
+# name = "Example Utility TOU (FAKE NUMBERS)"
+# effective_date = "2026-01-01"
+# fixed_usd_per_day = 1.10
+# # an amount your tariff MAY list as a separate per-kWh line item that may or may not already be
+# # folded into the headline rate above - if you are not SURE, leave this set and lss will show it
+# # as a stated uncertainty rather than silently pick a side. 0 or omit once you have verified
+# # your bill either way.
+# unresolved_usd_per_kwh = 0.0060
+#
+# [plan]
+# kind = "time_of_use"
+# summer_start_month = 6                       # summer = [start, end) by calendar month, 1-12
+# summer_end_month = 10
+# # your utility's OWN holiday schedule, as exact dates ("YYYY-MM-DD") - refresh this list once a
+# # year; it is not computed, on purpose (a "3rd Monday of February" rule is more code and more
+# # edge cases than a short list someone re-checks once a year)
+# holidays = [
+#   "2026-01-01", "2026-02-16", "2026-05-25", "2026-07-04",
+#   "2026-09-07", "2026-11-11", "2026-11-26", "2026-12-25",
+# ]
+#
+# [[plan.periods]]
+# name = "summer_on_peak"
+# usd_per_kwh = 0.65
+# season = "summer"              # "summer" | "winter" | "any"
+# day_kind = "weekday"           # "weekday" | "weekend_or_holiday" | "any"
+# start_hour = 16                # local hour, 0-23, inclusive
+# end_hour = 21                  # local hour, 1-24, exclusive
+#
+# [[plan.periods]]
+# name = "summer_off_peak"
+# usd_per_kwh = 0.20
+# season = "summer"
+# day_kind = "weekday"
+# start_hour = 0
+# end_hour = 16
+#
+# [[plan.periods]]
+# name = "summer_off_peak"
+# usd_per_kwh = 0.20
+# season = "summer"
+# day_kind = "weekday"
+# start_hour = 21
+# end_hour = 24
+#
+# [[plan.periods]]
+# name = "summer_mid_peak"
+# usd_per_kwh = 0.35
+# season = "summer"
+# day_kind = "weekend_or_holiday"
+# start_hour = 16
+# end_hour = 21
+#
+# [[plan.periods]]
+# name = "summer_off_peak"
+# usd_per_kwh = 0.20
+# season = "summer"
+# day_kind = "weekend_or_holiday"
+# start_hour = 0
+# end_hour = 16
+#
+# [[plan.periods]]
+# name = "summer_off_peak"
+# usd_per_kwh = 0.20
+# season = "summer"
+# day_kind = "weekend_or_holiday"
+# start_hour = 21
+# end_hour = 24
+#
+# [[plan.periods]]
+# name = "winter_mid_peak"
+# usd_per_kwh = 0.45
+# season = "winter"
+# day_kind = "any"
+# start_hour = 16
+# end_hour = 21
+#
+# [[plan.periods]]
+# name = "winter_super_off_peak"
+# usd_per_kwh = 0.15
+# season = "winter"
+# day_kind = "any"
+# start_hour = 8
+# end_hour = 16
+#
+# [[plan.periods]]
+# name = "winter_off_peak"
+# usd_per_kwh = 0.15
+# season = "winter"
+# day_kind = "any"
+# start_hour = 21
+# end_hour = 24
+#
+# [[plan.periods]]
+# name = "winter_off_peak"
+# usd_per_kwh = 0.15
+# season = "winter"
+# day_kind = "any"
+# start_hour = 0
+# end_hour = 8

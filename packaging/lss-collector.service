@@ -1,0 +1,34 @@
+# systemd USER unit for the LLM SERVER STATUS collector (GPU box).
+#   install:  cp packaging/lss-collector.service ~/.config/systemd/user/
+#             systemctl --user daemon-reload && systemctl --user enable --now lss-collector
+#   logs:     journalctl --user -u lss-collector -f
+# Needs lingering (loginctl enable-linger $USER) so it runs without a login session,
+# membership of `adm` (kernel journal, for Xids) and `docker`.
+[Unit]
+Description=LLM SERVER STATUS collector (metrics, GPUs, incidents, alerts, C1 probe)
+After=network-online.target docker.service tailscaled.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/lss-collector
+Restart=always
+RestartSec=5
+# journald gets stdout+stderr
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lss-collector
+Nice=5
+# A monitor must stay small. Steady state is ~15 MB; the one-off 7-day Xid back-fill streams
+# the kernel journal through journalctl|grep (children count against this cgroup too).
+#   MemoryHigh     reclaim/throttle from here on: page cache from reading the journal goes first
+#   MemoryMax      hard stop: if it ever leaks, restart it rather than hurt the serve
+#   MemorySwapMax  never swap: an early build filled 512M AND swap reading the journal
+MemoryHigh=256M
+MemoryMax=512M
+MemorySwapMax=0
+TimeoutStopSec=10
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=default.target

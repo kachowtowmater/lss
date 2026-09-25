@@ -1,0 +1,22 @@
+# .privacy-words for a FRESH CLONE (this file is normally git-ignored, so it does not travel
+# with the repository). Copy it to .privacy-words in your checkout and edit it to name the
+# people, hosts and project names that must never appear in a public export:
+#
+#   cp packaging/privacy-words.example .privacy-words
+#
+# One regex per line; comments (#) and blank lines are skipped. A plain word shorter than 5
+# letters matches as a whole word only; everything else matches anywhere, case-insensitively.
+# The check already catches generic patterns without this file: absolute home paths, IP
+# addresses (except loopback, 0.0.0.0 and the documentation ranges - it also flags the
+# carrier-grade NAT ranges tailnets use), e-mail addresses (except example.com / GitHub
+# noreply), and credentials (API keys, tokens, private keys). What it CANNOT know without
+# this file is your host names, user names and project names. UNCOMMENT the lines below and
+# edit them - they are EXAMPLES, not a default:
+#
+#   zebrahost77        a made-up host name (matches anywhere)
+#   myuser             a user name (4 letters: matches as a whole word only)
+#   \bproj-\w+         a project prefix, as a regex
+zebrahost77
+myuser
+\bproj-\w+
+

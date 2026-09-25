@@ -1,0 +1,163 @@
+# Builds lss + lss-collector for the four triples install.sh asks for, tars each pair with a
+# sha256 beside it, and attaches all eight files - plus install.sh, the one-line installer - to
+# the GitHub release for a v* tag.
+#
+# Card #192: without this, a tag alone leaves install.sh's release download 404ing for every
+# stranger - ci.yml only ever ran tests, nothing here ever built or published a release asset.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux musl: cross-compiled from an ubuntu-latest runner via cross-rs (its Docker
+          # images carry the right C cross toolchain for each target - rusqlite's bundled sqlite
+          # needs one, not just a Rust cross-compiler).
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          # Darwin: both build natively on a macos-latest (Apple silicon) runner - its Xcode SDK
+          # covers both arches, no extra toolchain needed.
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: cargo build (cross, linux musl)
+        if: matrix.cross
+        run: cross build --release --locked --target ${{ matrix.target }} -p lss -p lss-collector
+
+      - name: cargo build (native, macOS)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --locked --target ${{ matrix.target }} -p lss -p lss-collector
+
+      - name: Package tarball + checksum
+        # install.sh extracts straight into a scratch dir and looks for ./lss and
+        # ./lss-collector there (install.sh:175,199) - the two binaries go at the tarball ROOT,
+        # never under a subdirectory. The .sha256 must be the plain `sha256sum`/`shasum -a 256`
+        # "HASH  FILENAME" line: install.sh:197 does `cut -d' ' -f1` on it.
+        run: |
+          set -euo pipefail
+          STAGE="$(mktemp -d)"
+          cp "target/${{ matrix.target }}/release/lss" "$STAGE/lss"
+          cp "target/${{ matrix.target }}/release/lss-collector" "$STAGE/lss-collector"
+          # card #299: the alert dispatcher alert_cmd names (card #81) - a curl-piped install has
+          # no checkout to take it from, so it travels in the tarball
+          install -m 0755 scripts/lss-notify.sh "$STAGE/lss-notify.sh"
+          ASSET="lss-${{ matrix.target }}.tar.gz"
+          tar -C "$STAGE" -czf "$ASSET" lss lss-collector lss-notify.sh
+          (sha256sum "$ASSET" 2>/dev/null || shasum -a 256 "$ASSET") >"$ASSET.sha256"
+          cat "$ASSET.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lss-${{ matrix.target }}
+          path: |
+            lss-${{ matrix.target }}.tar.gz
+            lss-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # fetch-depth: 0 keeps the full history and the tags, but on its own it did NOT bring the
+      # annotated tag object through (v1.0.0 and v1.1.0 both published the commit's message as
+      # their notes, exit 0). What makes the notes right is the "Release notes from the annotated
+      # tag" step below (card #253): it re-fetches the tag object and fails the run unless the
+      # tag is annotated.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # card #299: the one-line install - curl -fsSL .../releases/latest/download/install.sh | bash
+      # - fetches the installer of THIS release, next to the binaries it installs
+      # install.sh's DEFAULT_REPO line is re-stamped with the repository that published this
+      # release, so the one-liner's default is always the place its binaries are.
+      - name: Stage install.sh as a release asset
+        run: |
+          set -euo pipefail
+          sed -E "s#^DEFAULT_REPO=\"[^\"]*\"#DEFAULT_REPO=\"${GITHUB_REPOSITORY}\"#" install.sh > dist/install.sh
+          grep -q "^DEFAULT_REPO=\"${GITHUB_REPOSITORY}\"$" dist/install.sh || { echo "install.sh was not stamped with ${GITHUB_REPOSITORY}" >&2; exit 1; }
+
+      - name: List staged release assets
+        run: ls -la dist
+
+      # card #253: fetch-depth: 0 above is NOT enough on its own. On a tag push actions/checkout
+      # then runs `git fetch --no-tags origin +<sha>:refs/tags/<tag>`, which turns the annotated
+      # tag LIGHTWEIGHT - v1.1.0's page still carried the commit message, exit 0. This step
+      # re-fetches the tag object and FAILS the run unless the tag is annotated, before anything
+      # is published; the notes it prints are the tag's own message, never gh's fallback.
+      # card #254: the tag name reaches the shell through env, never expanded into the script
+      # text - a git tag name may contain `$(` or backticks.
+      - name: Release notes from the annotated tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md"
+          echo "--- release notes: $(wc -l < "$RUNNER_TEMP/notes.md") lines ---"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The body is the ANNOTATED tag's own message, checked and extracted by the step above -
+          # never a generated or invented changelog. Not --notes-from-tag any more: its silent
+          # fallback to the commit message shipped twice (v1.0.0, v1.1.0).
+          gh release create "$TAG" dist/* \
+            --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md"

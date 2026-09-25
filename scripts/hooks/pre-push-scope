@@ -1,0 +1,72 @@
+#!/bin/bash
+# Pre-push hook: refuse a push that would REVERT work the branch never touched (card #169).
+#
+# WHY. This happened TWICE on 2026-09-22, to two different agents, in one afternoon:
+#   1. A card-#149 commit was squashed with `git reset --soft origin/main` from a branch based
+#      on an OLDER main, so its diff carried the INVERSE of everything landed meanwhile: 50
+#      files, 1826 deletions, including a 246-line baseline fixture and an entire fixture scrub.
+#      Caught only by the author auditing their own push's --stat afterwards, then reverted.
+#   2. A card-#163 commit removed card #155's hard cap (a silent admission-safety limit) the
+#      same way. Found only because an unrelated rebase conflict showed HEAD as EMPTY where a
+#      commit added lines - not a shape a normal conflict takes. Nobody would have noticed
+#      otherwise: a cap is silent when it does not fire.
+#
+# THE RULE, and it is the whole hook: your branch must have origin/<branch> as an ANCESTOR
+# before you push. If it does, a reversal is arithmetically impossible - every change you send
+# is one you made. If it does not, rebase. That is it.
+#
+# Install (once per clone):
+#   scripts/install-push-hook.sh
+#
+#   SKIP_PUSH_SCOPE=1   loud bypass for the rare deliberate case (an intentional revert of
+#                       someone else's commit, which you should be doing with `git revert`).
+set -euo pipefail
+
+remote_ref="${LSS_PUSH_TARGET:-}"
+if [ -z "$remote_ref" ]; then
+    # default to the tracked upstream, falling back to origin/main - the branch everything
+    # here lands on
+    remote_ref="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || echo origin/main)"
+fi
+
+if ! git rev-parse --verify --quiet "$remote_ref" >/dev/null; then
+    echo "pre-push-scope: no $remote_ref to compare against - nothing to check" >&2
+    exit 0
+fi
+
+if [ "${SKIP_PUSH_SCOPE:-0}" = "1" ]; then
+    echo "pre-push-scope: SKIPPED by SKIP_PUSH_SCOPE=1 (say so in the commit message)" >&2
+    exit 0
+fi
+
+# THE CHECK. `git merge-base --is-ancestor A B` is true when A is reachable from B, i.e. when
+# the branch already contains everything the remote has.
+if git merge-base --is-ancestor "$remote_ref" HEAD; then
+    exit 0
+fi
+
+base="$(git merge-base HEAD "$remote_ref")"
+# What this push would change relative to the remote, minus what the branch actually edited:
+# every file in that difference is someone else's work being undone.
+# `comm` on two sorted lists, not `mapfile`: this seat's own /bin/bash is 3.2, where mapfile
+# does not exist and the hook died with "mapfile: command not found" (exit 127) - a guard that
+# fails open on the machine it is meant to guard is worse than no guard. Caught by running it
+# by hand here rather than only in the Linux container, where bash 5 hid it.
+would_list="$(git diff --name-only "$remote_ref..HEAD" | sort -u)"
+mine_list="$(git diff --name-only "$base..HEAD" | sort -u)"
+reverts="$(comm -23 <(printf '%s\n' "$would_list") <(printf '%s\n' "$mine_list") | sed '/^$/d')"
+revert_count="$(printf '%s' "$reverts" | grep -c . || true)"
+
+echo "pre-push-scope: REFUSING - your branch does not contain $remote_ref." >&2
+echo "  HEAD is behind $remote_ref, so this push would UNDO commits landed since you branched." >&2
+if [ "${revert_count:-0}" -gt 0 ]; then
+    echo "  $revert_count file(s) would change that your branch never edited:" >&2
+    printf '%s\n' "$reverts" | head -20 | sed 's/^/    /' >&2
+    if [ "$revert_count" -gt 20 ]; then
+        echo "    ... and $((revert_count - 20)) more" >&2
+    fi
+fi
+echo "  Fix it the boring way:  git fetch origin && git rebase $remote_ref" >&2
+echo "  Deliberately reverting someone? use 'git revert <sha>' (it goes FORWARD), or" >&2
+echo "  SKIP_PUSH_SCOPE=1 and say why in the commit message." >&2
+exit 1

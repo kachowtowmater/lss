@@ -1,0 +1,22 @@
+ LLM SERVER STATUS · gpu-box · model-a · UP 36m54s · restarts today 1 · $0.42/h                            refreshed ##:##:## 
+ TARGETS 24h first word 96% · speed 94% · no wait 97% · up 99.95%                                                             
+┏ o SERVE (UP 36m54s) ━━━━━━━━━━━━━━━━━━━┓┌ o GPUS (4 · 57 W) ─────────────────────┐┌ o LANES (gate v5) ─────────────────────┐
+┃write 412.5 tok/s        ▁▁▁▁▁▁▁▁████▁▁▁┃│GPU0* 52°C/126°F   ▄▄▆▄  19W   0%  93.3G││public   run 0 · queue 0 · wait 0       │
+┃read  4180 tok/s         ▁▁▁▁▁▁▁█████▁▁▁┃│GPU1  42°C/108°F   ▃▃▅▃  15W   0%  93.3G││         10 min  2xx 14  4xx 10  5xx 0  │
+┃run [##------] 2/8  q 0       ▁▁▁▁▁▄▄▄▁▁┃│GPU2  47°C/117°F   ▃▃▅▃  13W   0%  93.3G││trusted  run 0 · queue 0 · wait 0       │
+┃KV [#-----] 12.3%  TTFT 183ms/2.0s      ┃│GPU3  46°C/115°F   ▃▃▅▃  11W   0%  93.3G││         10 min  2xx 7  4xx 3  5xx 0    │
+┃C1 191.7 tok/s · 2m03s ago (1 invalid)  ┃│total 57/1200 W  util 0%                ││gate UP v5 · rejected 413 1 · 429 0     │
+┃accept 3.10 (70%) · cache hit 45.2%     ┃│hottest GPU · last hour · peak 72C/162F ││probes: 3 excluded (2 in 10 min)        │
+┃ITL 3.2ms  e2e 2.0s/19.0s               ┃│72C┤                        ██████      ││in-flight budget used · last hour       │
+┃queue wait p50 0.6ms · p99 46ms         ┃│   │                        ██████      ││100%┤                       ▆▆▆▇▇▇▇     │
+┃C1 alert < 152.4 tok/s (80% of 190.5)   ┃│   │                        ██████      ││  0%┤            ▁▁▁▁▁▁▁▁▁▁▁███████▁▁▁▁▁│
+┃tok in 507.0k out 1.0k                  ┃│50C┤            ▃▃▃▃▃▃▃▃▃▃▃▃██████▃▃▃▃▃▃│└────────────────────────────────────────┘
+┃writing tok/s · last hour               ┃└────────────────────────────────────────┘┌ o USERS (2 now · 3 in 24h) ────────────┐
+┃410┤                        ██████      ┃┌ o ADVICE (all fine) ───────────────────┐│active   2 now · 2 in 10 min · 3 in 24 h│
+┃   │                        ██████      ┃│FINE  All 8 slots were busy 0.6% of the ││slots    [##------] 2/8  in use now     │
+┃   │                        ██████      ┃│      week - no capacity problem.       ││acme            2 running  2100 req/24h │
+┃   │                        ██████      ┃│FINE  Memory (KV) peaked at 33% (p95    ││laptop          1 running  388 req/24h  │
+┃  0┤            ▁▁▁▁▁▁▁▁▁▁▁▁██████▁▁▁▁▁▁┃│      14%) - comfortable.               ││office          idle       19 req/24h   │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└────────────────────────────────────────┘└────────────────────────────────────────┘
+ INCIDENTS 4 in 7d · last ##-## ##:## container_rest…   enter > ALERTS none firing · last ##-## ##:## serve_down   enter >    
+ [0 overview]  1 latency  2 load  3 gpus  4 users  5 tokens  6 model  7 gateway  8 alerts  9 incidents  a advice       ? help 

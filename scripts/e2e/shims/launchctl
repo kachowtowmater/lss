@@ -1,0 +1,44 @@
+#!/bin/bash
+# launchctl stand-in for the macOS e2e (card #296). The e2e runs the installer under a throwaway
+# HOME, and a REAL `launchctl load` would start a collector inside the owner's own login session
+# (and could replace a real ai.lss.collector agent). This shim does what launchd would do with the
+# plist - run its ProgramArguments in the background, output to StandardOutPath - and nothing else.
+# State: $E2E_SHIM_STATE/<label>.pid. Every call is logged to $E2E_SHIM_STATE/launchctl.log.
+set -u
+STATE="${E2E_SHIM_STATE:?E2E_SHIM_STATE is not set: refusing to act as launchctl outside the e2e}"
+mkdir -p "$STATE"
+echo "launchctl $*" >>"$STATE/launchctl.log"
+plist_for() { # a plist path, or a label / service target like gui/501/ai.lss.collector
+    case "$1" in
+        *.plist) echo "$1" ;;
+        *) local label="${1##*/}"; echo "$HOME/Library/LaunchAgents/$label.plist" ;;
+    esac
+}
+label_of() { /usr/bin/plutil -extract Label raw -o - "$1" 2>/dev/null; }
+start() {
+    local plist="$1" label; label="$(label_of "$plist")" || { echo "launchctl(shim): cannot read $plist" >&2; return 1; }
+    [ -f "$STATE/$label.pid" ] && kill -0 "$(cat "$STATE/$label.pid")" 2>/dev/null && return 0
+    local args=() i=0 a out
+    while a="$(/usr/bin/plutil -extract "ProgramArguments.$i" raw -o - "$plist" 2>/dev/null)"; do args+=("$a"); i=$((i + 1)); done
+    [ "${#args[@]}" -gt 0 ] || { echo "launchctl(shim): no ProgramArguments in $plist" >&2; return 1; }
+    out="$(/usr/bin/plutil -extract StandardOutPath raw -o - "$plist" 2>/dev/null || echo /dev/null)"
+    mkdir -p "$(dirname "$out")"
+    nohup "${args[@]}" >>"$out" 2>&1 </dev/null &
+    echo $! >"$STATE/$label.pid"
+}
+stop() {
+    local plist="$1" label; label="$(label_of "$plist")" || label="$(basename "$plist" .plist)"
+    if [ -f "$STATE/$label.pid" ]; then kill "$(cat "$STATE/$label.pid")" 2>/dev/null; rm -f "$STATE/$label.pid"; fi
+    return 0
+}
+case "${1:-}" in
+    load) shift; [ "${1:-}" = -w ] && shift; start "$1" ;;
+    unload) shift; [ "${1:-}" = -w ] && shift; stop "$1" ;;
+    bootstrap) start "$(plist_for "$3")" ;;
+    bootout) if [ $# -ge 3 ]; then stop "$(plist_for "$3")"; else stop "$(plist_for "$2")"; fi ;;
+    kickstart) shift; [ "${1:-}" = -k ] && shift; p="$(plist_for "$1")"; stop "$p"; start "$p" ;;
+    enable|disable) exit 0 ;;
+    list|print)
+        for f in "$STATE"/*.pid; do [ -e "$f" ] || continue; pid="$(cat "$f")"; kill -0 "$pid" 2>/dev/null && printf '%s\t0\t%s\n' "$pid" "$(basename "$f" .pid)"; done ;;
+    *) echo "launchctl(shim): '$*' is not emulated - add it to scripts/e2e/shims/launchctl" >&2; exit 1 ;;
+esac

@@ -1,0 +1,86 @@
+{
+  "v": 1,
+  "generated_at": 1789820000,
+  "range_s": 600,
+  "step_s": 60,
+  "start_ts": 1789819440,
+  "points": 10,
+  "tier": "1m",
+  "series": {
+    "decode_tok_s": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "gpu0_temp_c": [
+      52.0,
+      52.0,
+      52.0,
+      52.0,
+      52.0,
+      52.0,
+      52.0,
+      52.0,
+      52.0,
+      52.0
+    ],
+    "never_recorded": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    "queue": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "queue:avg": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "ttft_p99_ms": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      2000.0,
+      null,
+      null
+    ]
+  },
+  "unknown": [
+    "never_recorded"
+  ]
+}
