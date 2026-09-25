@@ -46,6 +46,13 @@ curl -fsSL https://github.com/kachowtowmater/lss/releases/latest/download/instal
 lss
 ```
 
+Or download the installer first, to read it before it runs (the same release, the same checks):
+
+```
+curl -fsSLo install.sh https://github.com/kachowtowmater/lss/releases/latest/download/install.sh
+bash install.sh
+```
+
 Or from a clone:
 
 ```
@@ -418,7 +425,7 @@ lss advice               evidence for settings and upgrade decisions (--range 24
 lss latency|load|gpus|gateway [--range 15m|1h|6h|24h|7d]      lss rules
 lss maintenance start "reason" [--minutes N] | stop | status   planned work: its restart
                                                                  shows "planned", not a warning
-lss --demo               the live screen on built-in sample data (no collector needed)
+lss --demo               the live screen on built-in sample data (no collector needed; piped or --json: the sample status once)
 exit codes: 0 serve up · 1 serve DOWN / refused · 2 collector unreachable / bad usage
 ```
 Every command except the bare `lss` is safe for scripts, cron and agents: plain text with stable

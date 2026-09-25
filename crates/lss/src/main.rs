@@ -33,7 +33,7 @@ Options   (-h help · -V version)
   --server S  with [[server]] entries in lss.toml: which one (its name or number; default the first)
   --force --note --dataset --no-wait --minutes   bench flags; maintenance auto-expire (default 60m)
   --under-load  bench w/ other traffic, recorded    --accuracy  compare: paired accuracy test too
-  --demo      the live screen on built-in sample data, no collector needed
+  --demo      the live screen on sample data, no collector needed (piped or --json: printed once)
   --no-save   never saves theme/layout/range/chart ($LSS_PREFS, else ~/.config/lss/ui.json)
 Keys (live screen)   arrows move   enter open   1-9,a pages   r range   s sort   b bench   esc back
                      T theme   L layout   c chart   v page1   w watch   [ ] server   ? help   q quit
@@ -161,6 +161,9 @@ fn main() {
                 2
             }
         },
+        // v1.2.1: `--demo` never needs a collector, with or without a terminal - piped (no TTY)
+        // or with --json it prints the built-in sample status once and exits 0
+        None if a.demo => demo_shot(a.json),
         None => one_shot("status", a.json, &url),
         Some("users") => users_shot(a.json, &url),
         Some("loadouts") => doc_shot(a.json, &url, "/loadouts", |body| Ok(report::loadouts(&parse_doc(body)?, now()))),
@@ -497,6 +500,19 @@ fn one_shot(cmd: &str, json: bool, url: &str) -> i32 {
         });
     }
     i32::from(!status.serve.up)
+}
+
+/// `lss --demo` without a terminal (piped, or --json): the built-in sample status, once. Says it
+/// is sample data on the first line, so a pasted output can never be read as a real server's.
+fn demo_shot(json: bool) -> i32 {
+    let s = lss::demo::status();
+    if json {
+        println!("{}", serde_json::to_string(&s).unwrap_or_default());
+    } else {
+        println!("DEMO: built-in sample data, not a real server (no collector is contacted)");
+        print!("{}", plain::status(&s, s.generated_at + 3));
+    }
+    0
 }
 
 /// `lss latency|load|gpus|gateway|rules`: the same data a detail page draws, as text or JSON.

@@ -164,6 +164,9 @@ fn release_url_for_origin(origin: &str) -> String {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("stub")).unwrap();
     std::fs::copy(repo().join("install.sh"), dir.join("install.sh")).unwrap();
+    // a CLONE of this project (v1.2.1: only inside our own checkout does the origin name the repo)
+    std::fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::create_dir_all(dir.join("crates/lss-collector")).unwrap();
     let curl = dir.join("stub/curl");
     exec_file::write_exec(&curl, "#!/bin/sh\nexit 1\n");
     for args in [vec!["init", "-q", "."], vec!["remote", "add", "origin", origin]] {
@@ -670,6 +673,43 @@ fn detached(argv0: &str) -> u32 {
     String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
 }
 
+/// Start `sleep 600` detached, showing `argv` (spaces allowed) as its command line.
+fn detached_as(argv: &str) -> u32 {
+    let out = Command::new("bash").arg("-c").arg("nohup bash -c 'exec -a \"$1\" sleep 600' _ \"$1\" >/dev/null 2>&1 & echo $!").arg("_").arg(argv).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
+#[test]
+fn uninstall_stops_a_collector_started_by_hand_and_leaves_one_that_is_not_this_installs() {
+    // v1.2.1 (tb lss #302): --uninstall left a hand-started lss-collector (no pid file) running
+    // with /health up. It now stops one that is certainly this install's - its --config in the
+    // install's config dir, or no --config and the install's own binary - and leaves any other
+    // lss-collector running with its pid and how to stop it. A process that merely MENTIONS
+    // lss-collector (tail -f of its log) is not touched or mentioned.
+    let r = Real::new("handstart");
+    let home = r.home();
+    let bin = home.join(".local/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let with_config = detached_as(&format!("{}/lss-collector --config {}/.config/lss/collector.toml", bin.display(), home.display()));
+    let plain = detached_as(&format!("{}/lss-collector", bin.display()));
+    let other = detached_as(&format!("{}/elsewhere/lss-collector --config {}/elsewhere/collector.toml", r.dir.display(), r.dir.display()));
+    let bystander = detached_as(&format!("tail -f {}/.local/state/lss/lss-collector.log", home.display()));
+    for p in [with_config, plain, other, bystander] {
+        assert!(alive(p), "stand-in {p} runs");
+    }
+    let out = Command::new("bash").arg(repo().join("install.sh")).args(["--uninstall", "--yes"]).env("HOME", &home).env_remove("XDG_CONFIG_HOME").env_remove("XDG_STATE_HOME").env("LSS_TTY", "/nonexistent").output().unwrap();
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let (a, b, c, d) = (alive(with_config), alive(plain), alive(other), alive(bystander));
+    for p in [with_config, plain, other, bystander] {
+        let _ = Command::new("kill").arg(p.to_string()).status();
+    }
+    assert!(out.status.success(), "{said}");
+    assert!(!a && said.contains(&format!("stopped a collector started by hand (pid {with_config}:")), "its --config is this install's: stopped\n{said}");
+    assert!(!b && said.contains(&format!("stopped a collector started by hand (pid {plain}:")), "this install's binary, default config: stopped\n{said}");
+    assert!(c && said.contains(&format!("left pid {other} alone")) && said.contains(&format!("kill {other}")), "another install's collector keeps running, and the reader is told how to stop it\n{said}");
+    assert!(d && !said.contains(&bystander.to_string()), "a process that only mentions lss-collector is none of our business\n{said}");
+}
+
 #[test]
 fn a_service_manager_taking_over_first_stops_the_collector_the_nohup_fallback_started() {
     // card #328: install.sh on a box with no user session started the collector with nohup and a
@@ -803,4 +843,113 @@ fn the_nohup_restart_leaves_an_unrelated_process_named_by_the_pid_file_alone() {
     assert!(said.contains(&format!("left pid {stranger} alone")), "and it says so: {said}");
     assert!(new != 0 && new != stranger, "a fresh pid file names the NEW collector (got {new}):\n{said}");
     assert!(new_args.contains("lss-collector"), "pid {new} is the new lss-collector: {new_args:?}");
+}
+
+/// v1.2.1 (tb lss #302, found by lss-inst-v1): the README's download-then-run form -
+/// `curl -fsSLo install.sh <release URL>; bash install.sh` - failed with 'No release binary fits
+/// this machine': the stamped DEFAULT_REPO was used only when the script was PIPED. Now any
+/// install.sh that is not inside a source checkout downloads from the repository that published
+/// it, exactly like the piped form; a clone still goes by its own origin (or builds). Driven for
+/// real against a local release server: a stub curl maps the stamped repo's GitHub release URL
+/// onto it, so the default-repo path itself is what is exercised (no LSS_RELEASE_BASE).
+#[test]
+fn a_downloaded_install_sh_installs_from_its_own_release_like_the_piped_form_and_a_clone_keeps_its_origin() {
+    let Some(triple) = triple() else {
+        eprintln!("SKIPPED: no release triple for this OS/ARCH - install.sh has nothing to download here");
+        return;
+    };
+    let real_curl = String::from_utf8(Command::new("sh").args(["-c", "command -v curl"]).output().unwrap().stdout).unwrap().trim().to_string();
+    if real_curl.is_empty() {
+        eprintln!("SKIPPED: no curl on this machine");
+        return;
+    }
+    let eng = Engine::start(None);
+    let probe = Real::new("dl-probe");
+    let (tar, sum) = probe.tarball();
+    let asset = format!("lss-{triple}.tar.gz");
+    let host = ReleaseHost::start(vec![(asset.clone(), tar), (format!("{asset}.sha256"), format!("{sum}  {asset}\n").into_bytes())]);
+    // a curl that sends github.com/acme/public-lss/releases/... (the stamped repo) to the local host
+    let stub_curl = |r: &Real| -> String {
+        let stub = r.dir.join("stubbin");
+        std::fs::create_dir_all(&stub).unwrap();
+        exec_file::write_exec(&stub.join("curl"), &format!("#!/bin/bash\nargs=()\nfor a in \"$@\"; do args+=(\"${{a/https:\\/\\/github.com\\/acme\\/public-lss\\/releases/{}}}\"); done\nexec {real_curl} \"${{args[@]}}\"\n", host.base()));
+        format!("{}:{}", stub.display(), std::env::var("PATH").unwrap_or_default())
+    };
+    let run_file = |r: &Real, script: &Path, args: &[&str], path: &str| -> (bool, String) {
+        let out = Command::new("bash").arg(script).args(args).current_dir(script.parent().unwrap())
+            .env("HOME", r.home()).env("PATH", path).env("LSS_TTY", "/nonexistent")
+            .env_remove("XDG_CONFIG_HOME").env_remove("XDG_STATE_HOME").env_remove("LSS_REPO").env_remove("LSS_RELEASE_BASE").env_remove("LSS_API_KEY")
+            .stdin(std::process::Stdio::null()).output().unwrap();
+        (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    let installed = |r: &Real| ["lss", "lss-collector", "lss-notify.sh"].iter().all(|p| r.home().join(".local/bin").join(p).exists());
+
+    // 1. piped (curl ... | bash): from the stamped repo's release
+    let r = Real::new("dl-piped");
+    let path = stub_curl(&r);
+    let (ok, said) = r.bash(&["--yes", "--no-service", "--url", &eng.url(), "--skip-cost"], &[("PATH", &path)], true);
+    assert!(ok && said.contains(&format!("sha256 matches the published checksum ({sum})")) && installed(&r), "piped:\n{said}");
+
+    // 2. downloaded (curl -fsSLo install.sh URL; bash install.sh): the SAME release, the same check
+    let r = Real::new("dl-file");
+    let path = stub_curl(&r);
+    let file = r.dir.join("downloads/install.sh");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, stamped("acme/public-lss")).unwrap();
+    let (ok, said) = run_file(&r, &file, &["--yes", "--no-service", "--url", &eng.url(), "--skip-cost"], &path);
+    assert!(ok, "a downloaded install.sh must install like the piped one:\n{said}");
+    assert!(said.contains(&format!("sha256 matches the published checksum ({sum})")) && installed(&r), "{said}");
+    // ...and --repo still overrides the stamped one
+    let (_, said) = run_file(&r, &file, &["--dry-run", "--no-service", "--repo", "acme/other"], &path);
+    assert!(said.contains("https://github.com/acme/other/releases/latest/download/lss-"), "{said}");
+
+    // 3. inside a clone (a source checkout): its OWN origin decides, never the stamped default
+    let r = Real::new("dl-clone");
+    let path = stub_curl(&r);
+    let clone = r.dir.join("clone");
+    std::fs::create_dir_all(&clone).unwrap();
+    std::fs::write(clone.join("install.sh"), stamped("acme/public-lss")).unwrap();
+    std::fs::write(clone.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::create_dir_all(clone.join("crates/lss-collector")).unwrap(); // THIS project's checkout
+    let git = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(&clone).output().unwrap().status.success(), "git {args:?}");
+    git(&["init", "-q"]);
+    git(&["remote", "add", "origin", "https://github.com/acme/clone-lss.git"]);
+    let (_, said) = run_file(&r, &clone.join("install.sh"), &["--dry-run", "--no-service"], &path);
+    assert!(said.contains("https://github.com/acme/clone-lss/releases/latest/download/lss-"), "a clone downloads from its origin:\n{said}");
+    assert!(!said.contains("acme/public-lss"), "a clone never falls back to the stamped repo:\n{said}");
+    // a clone whose origin is not on GitHub builds from source (or says it cannot) - still not the stamped repo
+    git(&["remote", "set-url", "origin", "https://example.com/somewhere/else.git"]);
+    let (_, said) = run_file(&r, &clone.join("install.sh"), &["--dry-run", "--no-service"], &path);
+    assert!(!said.contains("acme/public-lss"), "{said}");
+
+    // 4. (lss-inst-v1's edge on 3c2abbd) a downloaded install.sh inside ANOTHER project's git folder
+    // - a home folder under dotfiles version control, origin someone/myproj, no Cargo.toml - is not
+    // our checkout: it installs from the repository that published it, never someone/myproj's
+    let r = Real::new("dl-dotfiles");
+    let path = stub_curl(&r);
+    let dotfiles = r.dir.join("dotfiles");
+    std::fs::create_dir_all(&dotfiles).unwrap();
+    std::fs::write(dotfiles.join("install.sh"), stamped("acme/public-lss")).unwrap();
+    let dgit = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(&dotfiles).output().unwrap().status.success(), "git {args:?}");
+    dgit(&["init", "-q"]);
+    dgit(&["remote", "add", "origin", "https://github.com/someone/myproj.git"]);
+    let (ok, said) = run_file(&r, &dotfiles.join("install.sh"), &["--yes", "--no-service", "--url", &eng.url(), "--skip-cost"], &path);
+    assert!(!said.contains("someone/myproj"), "another project's origin must not pick the release:\n{said}");
+    assert!(ok && said.contains(&format!("sha256 matches the published checksum ({sum})")) && installed(&r), "it installs from the stamped repo's release:\n{said}");
+
+    // 5. (lss-inst-v1: mutant 'any Cargo.toml is our checkout' survived) a downloaded install.sh
+    // inside ANOTHER Rust project - a Cargo.toml, but not our crates - is not our checkout either:
+    // it installs from the repository that published it, and never tries to build that project
+    let r = Real::new("dl-other-rust");
+    let path = stub_curl(&r);
+    let other = r.dir.join("my-rust-project");
+    std::fs::create_dir_all(other.join("src")).unwrap();
+    std::fs::write(other.join("Cargo.toml"), "[package]\nname = \"my-rust-project\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+    std::fs::write(other.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(other.join("install.sh"), stamped("acme/public-lss")).unwrap();
+    let (_, said) = run_file(&r, &other.join("install.sh"), &["--dry-run", "--no-service"], &path);
+    assert!(said.contains("would download https://github.com/acme/public-lss/releases/latest/download/lss-"), "another project's Cargo.toml is not our checkout:\n{said}");
+    let (ok, said) = run_file(&r, &other.join("install.sh"), &["--yes", "--no-service", "--url", &eng.url(), "--skip-cost"], &path);
+    assert!(ok && said.contains(&format!("sha256 matches the published checksum ({sum})")) && installed(&r), "it installs from the stamped repo's release:\n{said}");
+    assert!(!said.contains("cargo build") && !other.join("target").exists(), "and never builds that project:\n{said}");
 }

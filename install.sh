@@ -103,9 +103,15 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$RELEASE_BASE" ] && [ -n "$REPO" ]; then RELEASE_BASE="https://github.com/$REPO/releases"; fi
+# v1.2.1 (tb lss #302): are we inside a checkout of THIS project (its Cargo.toml and its crates
+# beside this file)? Only then is there source to build from, and only then does a git origin
+# name OUR repository - a downloaded install.sh kept in some other project's git folder (a home
+# folder under dotfiles version control, say) must not take THAT project's releases, or build it.
+IN_SOURCE=0
+[ "$PIPED" = 0 ] && [ -f "$HERE/Cargo.toml" ] && [ -d "$HERE/crates/lss-collector" ] && IN_SOURCE=1
 # card #86 item 2: with no --repo / $LSS_REPO, a clone looks at its OWN origin - a clone of a
 # repository that publishes releases gets its binaries without anyone passing a flag.
-if [ -z "$RELEASE_BASE" ] && [ -z "$REPO" ] && [ "$PIPED" = 0 ] && command -v git >/dev/null 2>&1; then
+if [ -z "$RELEASE_BASE" ] && [ -z "$REPO" ] && [ "$IN_SOURCE" = 1 ] && command -v git >/dev/null 2>&1; then
     origin=$(git -C "$HERE" remote get-url origin 2>/dev/null || true)
     # card #189: OWNER/NAME out of every remote shape the host hands out - https://.../NAME.git,
     # https://.../NAME, ssh://git@.../NAME.git and the scp form git@...:OWNER/NAME.git. The
@@ -123,8 +129,13 @@ if [ -z "$RELEASE_BASE" ] && [ -z "$REPO" ] && [ "$PIPED" = 0 ] && command -v gi
     esac
 fi
 # card #299: piped from curl there is no checkout to build from and no origin to look at - the
-# public repository is the only place the programs can come from
-if [ -z "$RELEASE_BASE" ] && [ "$PIPED" = 1 ] && [ -z "$BINARY_DIR" ] && [ "$UNINSTALL" = 0 ]; then
+# public repository is the only place the programs can come from. v1.2.1 (tb lss #302): the same
+# holds for a DOWNLOADED copy (`curl -fsSLo install.sh <release URL>; bash install.sh`): outside a
+# source checkout (IN_SOURCE, above) there is nothing to build either, so it downloads from
+# the repository that published it too. Before, only the piped form did, and the downloaded one
+# stopped with 'No release binary fits this machine'. Inside a clone, its own origin (above) or a
+# build from source still decides.
+if [ -z "$RELEASE_BASE" ] && [ "$IN_SOURCE" = 0 ] && [ -z "$BINARY_DIR" ] && [ "$UNINSTALL" = 0 ]; then
     REPO="$DEFAULT_REPO"
     RELEASE_BASE="https://github.com/$REPO/releases"
 fi
@@ -152,16 +163,50 @@ stop_nohup_collectors() { # card #328: stop every collector a pid file of ours n
         fi
         run rm -f "$pidfile"
     done
-    # wait (up to 5 s) until they are gone: the next collector binds the same address at once
-    if [ -n "$stopped" ] && [ "$DRY" != 1 ]; then
-        local n=0
-        while [ "$n" -lt 50 ]; do
-            local alive=0
-            for pid in $stopped; do kill -0 "$pid" 2>/dev/null && alive=1; done
-            [ "$alive" = 0 ] && break
-            sleep 0.1; n=$((n + 1))
-        done
-    fi
+    wait_gone $stopped
+}
+wait_gone() { # wait_gone PID...: up to 5 s until they are gone - the next collector binds the same
+    # address at once
+    [ "$#" -gt 0 ] && [ "$DRY" != 1 ] || return 0
+    local n=0 pid alive
+    while [ "$n" -lt 50 ]; do
+        alive=0
+        for pid in "$@"; do kill -0 "$pid" 2>/dev/null && alive=1; done
+        [ "$alive" = 0 ] && break
+        sleep 0.1; n=$((n + 1))
+    done
+}
+stop_hand_started_collectors() { # v1.2.1: --uninstall also stops a collector started BY HAND (no
+    # pid file), found by what it runs - but only one that is certainly THIS install's: its
+    # --config is in $CONFIG_DIR, or it has no --config (so it reads this install's default) and it
+    # is $PREFIX/lss-collector itself. Any other lss-collector of this user is left running, with its
+    # pid and the command that stops it. Only processes whose PROGRAM is lss-collector count (a
+    # `tail -f .../lss-collector.log` is none of our business). Same stop as stop_nohup_collectors.
+    local pid cmd rest conf ours stopped=""
+    while read -r pid cmd rest; do
+        [ -n "$pid" ] && [ "$pid" != "$$" ] || continue
+        [ "${cmd##*/}" = lss-collector ] || continue
+        conf=""
+        case " $rest " in
+            *" --config "*) conf="${rest#*--config }"; conf="${conf%% *}" ;;
+            *" --config="*) conf="${rest#*--config=}"; conf="${conf%% *}" ;;
+        esac
+        ours=0
+        if [ -n "$conf" ]; then
+            case "$conf" in "$CONFIG_DIR"/*) ours=1 ;; esac
+        elif [ "$cmd" = "$PREFIX/lss-collector" ]; then
+            ours=1
+        fi
+        if [ "$ours" = 1 ]; then
+            run kill "$pid" || true
+            say "   $([ "$DRY" = 1 ] && echo 'would stop' || echo stopped) a collector started by hand (pid $pid: $cmd${rest:+ $rest})"
+            stopped="$stopped $pid"
+        else
+            say "   left pid $pid alone: an lss-collector that is not certainly this install's ($cmd${rest:+ $rest}). If it should go too:  kill $pid"
+        fi
+    done < <(ps -U "$(id -u)" -o pid= -o args= 2>/dev/null)
+    # shellcheck disable=SC2086
+    wait_gone $stopped
 }
 ask() { # ask "question" -> 0 = yes. Default yes; --yes and a dry run never ask.
     if [ "$YES" = 1 ] || [ "$DRY" = 1 ]; then return 0; fi
@@ -230,6 +275,8 @@ if [ "$UNINSTALL" = 1 ]; then
     fi
     # a collector this installer started itself (no service manager here): its pid file
     stop_nohup_collectors
+    # and one started by hand, with no pid file (v1.2.1)
+    stop_hand_started_collectors
     run rm -f "$PREFIX/lss" "$PREFIX/lss-collector" "$PREFIX/lss-notify.sh"
     say "Done."
     exit 0
@@ -306,8 +353,8 @@ elif ! have_programs && [ -n "$RELEASE_BASE" ] && [ -z "$(target_triple)" ]; the
     say "   there is no release binary for $OS $ARCH"
 fi
 if ! have_programs && [ "$DRY" != 1 ]; then
-    if [ "$PIPED" = 1 ] || [ ! -f "$HERE/Cargo.toml" ]; then
-        # piped from curl (or a lone copy of this file): no source to build from
+    if [ "$IN_SOURCE" = 0 ]; then
+        # piped from curl, or a copy of this file outside our source checkout: nothing to build from
         echo "install.sh: could not get the programs for $OS $ARCH. ${DOWNLOAD_FAILED:-No release binary fits this machine.}" >&2
         [ "$NO_CURL_FOR_RELEASE" = 1 ] && echo "  Install curl (Debian/Ubuntu: sudo apt install curl · Fedora: sudo dnf install curl) and run this again." >&2
         echo "  Or build from source: git clone the repository, then ./install.sh there (needs Rust: https://rustup.rs). Nothing was installed." >&2

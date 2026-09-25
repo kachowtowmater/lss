@@ -92,7 +92,8 @@ excluded() {
         docs/OMP-DEFAULT-MODEL.md) return 0 ;;
         # card #302: how WE publish the public copy (our GitHub account, the release run we
         # watch). A stranger's copy is already the published thing; it has nothing to publish.
-        scripts/publish-public.sh) return 0 ;;
+        # card #302 (--update): its test drives publish-public.sh, which the export does not carry
+        scripts/publish-public.sh|crates/lss-collector/tests/publish_script.rs|docs/RELEASING.md) return 0 ;;
         # card #324: the e2e gate's RED-first evidence (scripts/e2e/RED-on-<sha>.txt) is the
         # development record of a gate failing BEFORE the work - a transcript of our runs, not
         # something a stranger runs or reads. The gate itself (run.sh, scenario.sh, ...) ships.
