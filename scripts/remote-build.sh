@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build and test on a REMOTE Linux host that has docker (typically the GPU box) when this machine
 # cannot: sync the repo there and run cargo inside the build container.
-#   LSS_BUILD_HOST=<ssh host> scripts/remote-build.sh test      cargo test --workspace, TWICE, under
-#                                     two NON-UTC timezones (see "TIMEZONE" below)
+#   LSS_BUILD_HOST=<ssh host> scripts/remote-build.sh test      cargo test --workspace --no-fail-fast,
+#                                     TWICE, under two NON-UTC timezones (see "TIMEZONE" below)
 #   scripts/remote-build.sh clippy    cargo clippy --all-targets -- -D warnings
 #   scripts/remote-build.sh build     static musl release build of lss-collector (+ lss) → ~/lss-build/dist/
 #   scripts/remote-build.sh bless     regenerate fixtures/*_golden.json (status, series, rules, gateway) and the overview
@@ -45,6 +45,9 @@
 # a day ahead of the first zone during this run, which exercises date rollover for free.
 #      LSS_TEST_TZ   first pass  (default America/Los_Angeles)
 #      LSS_TEST_TZ2  second pass (default Asia/Kolkata; set it EMPTY to run one pass only)
+# Each pass runs `cargo test --workspace --no-fail-fast` (card #425): one red binary no longer
+# hides the later ones - every binary's tests run in both passes, and cargo still exits nonzero
+# when anything failed, so a failing pass still fails the command (set -e is on).
 # Both passes must be green. Each prints the zone and the container's own `date` first, so a green
 # run can never be mistaken for one that quietly ran in UTC.
 #
@@ -267,7 +270,7 @@ case "$CMD" in
   # question the output leaves open. Any pass failing fails the command (set -e is on).
   test)   for _tz in "$TEST_TZ" ${TEST_TZ2:+"$TEST_TZ2"}; do
             echo "=== cargo test --workspace under TZ=$_tz"
-            run "date && cargo test --workspace 2>&1" "-e TZ=$_tz"
+            run "date && cargo test --workspace --no-fail-fast 2>&1" "-e TZ=$_tz"
           done ;;
   # `rust:latest` ships WITHOUT clippy: install it when it is missing, so "clippy clean" can never
   # be a step that silently did not run (the last line printed is clippy's own version)

@@ -696,6 +696,23 @@ fn the_gateways_own_tooling_is_not_in_the_public_copy() {
         "scripts/publish-public.sh",
         // card #324: the e2e gate's RED-first evidence (a transcript of our runs)
         "scripts/e2e/RED-on-5e4b92f.txt",
+        // card #423: docs/serve/ is the write-up of OUR serve's incidents and measurements
+        // (per-card model ids, container/image tags, engine file:line), and the ops scripts
+        // beside it drive OUR serve/gate shadow-log components - deployment vocabulary, the
+        // same class as gate-deploy.sh above.
+        "docs/serve/343-thinking-leak.md",
+        "docs/serve/405-repro.sh",
+        "scripts/serve-boot-check.py",
+        "scripts/batch-variance.py",
+        "scripts/incident-timeline.py",
+        "scripts/per-caller-cache.py",
+        "scripts/agent-prompt-sizes.py",
+        "scripts/trie-error.py",
+        // card #423 lead decision: the measurements/incidents docs and the committed test of one
+        // excluded script are the same fleet-internal class.
+        "docs/measurements/156-trie-estimation-error.md",
+        "docs/incidents/2026-09-25-xid8.md",
+        "scripts/tests/test_trie_error.py",
     ] {
         assert!(!dest.join(gone).exists(), "{gone} drives something the public copy does not ship, so it must not be in it");
     }

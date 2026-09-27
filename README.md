@@ -485,7 +485,7 @@ its default (a test holds that file to the built-in defaults). Unknown keys are 
 | `engine_url`, `engine_kind` | `"auto"`, `"auto"` | the LLM server; `auto` finds it ([docs/ENGINES.md](docs/ENGINES.md)) |
 | `[[engine]] kind, url, name` | none | pins what `--detect` would find |
 | `serve_container`, `serve_port` | `auto`, `0` | `auto` = whichever container publishes the engine's port (survives a model swap). No docker = no container facts |
-| `slots` | `0` | `0` = ask the engine (SGLang, llama.cpp and TGI say); set it for the others |
+| `slots` | `0` | `0` = ask the engine (SGLang, llama.cpp and TGI say); set it for the others. Asked again whenever the served model id or the serve container's start time changes, and at least every 300 s (`LSS_SLOTS_RECHECK_SECS` overrides, `0` = every poll); a configured value is never re-fetched, a failed fetch drops to 0 and is retried |
 | `listen` | `["127.0.0.1:8099"]` | add a LAN / VPN address to read it from another machine |
 | `db_path` | `~/.local/state/lss/lss.db` | |
 | `raw_hours`, `retention_days`, `rollup_10m_days` | `24`, `14`, `90` | what each storage tier keeps |

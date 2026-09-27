@@ -39,8 +39,35 @@ if [ "${SKIP_PUSH_SCOPE:-0}" = "1" ]; then
     exit 0
 fi
 
+# A ref DELETE (e.g. `git push origin --delete X`) sends the all-zeros sha as the local ref
+# and pushes no content, so the ancestor rule has nothing to bite on - deleting your own
+# branch tip cannot undo anyone's work. #394: allow it and move on.
+is_delete_line() {
+    case "$1" in
+        0000000000000000000000000000000000000000 | 0000000000000000000000000000000000000000000000000000000000000000) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # THE CHECK. `git merge-base --is-ancestor A B` is true when A is reachable from B, i.e. when
-# the branch already contains everything the remote has.
+# the branch already contains everything the remote has. A delete refspec (local sha = all
+# zeros) carries no content, so it is allowed through unconditionally (see is_delete_line).
+has_delete=0
+has_content=0
+while read -r local_ref local_sha remote_ref2 remote_sha; do
+    if is_delete_line "$local_sha"; then
+        has_delete=1
+    else
+        has_content=1
+    fi
+done
+
+# Every line a delete (e.g. `git push origin --delete X`): no content is sent, nothing to
+# check - allow. A mixed push still runs the check below, unchanged, for its content lines.
+if [ "$has_delete" -eq 1 ] && [ "$has_content" -eq 0 ]; then
+    exit 0
+fi
+
 if git merge-base --is-ancestor "$remote_ref" HEAD; then
     exit 0
 fi

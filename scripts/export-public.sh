@@ -98,6 +98,31 @@ excluded() {
         # development record of a gate failing BEFORE the work - a transcript of our runs, not
         # something a stranger runs or reads. The gate itself (run.sh, scenario.sh, ...) ships.
         scripts/e2e/RED-*.txt) return 0 ;;
+        # card #423, one class sweep (the #190 precedent, FOURTH time this class has shipped):
+        # docs/serve/ is the write-up of OUR serve's incidents and measurements - which model id
+        # we serve on which GPU box, container and image tags we run, engine code paths at
+        # specific file:line, per-card tb citations. A stranger has no such serve; every card's
+        # entry names exactly the model the words list forbids. The ops scripts beside them are
+        # the same class of DEPLOYMENT vocabulary:
+        #   serve-boot-check.py  defaults --model/--container to the serve we run, and runs ON it
+        #   batch-variance.py    probes that same serve at its loopback port, model id inline
+        #   incident-timeline.py pins OUR 2026-09-25 16:18Z Xid-8 hang by timestamp
+        #   per-caller-cache.py  joins OUR gate's shadow-log records on OUR caller ids
+        #   agent-prompt-sizes.py same shadow-log shape, our per-caller admission records
+        #   trie-error.py        same gateway shadow-log records (pinned copies on our GPU box)
+        # (The last four have no model ids to neutralise and stay generic per card - but each
+        # drives a component a stranger does not have, so the tooling goes with the thing it
+        # drives, as gate-deploy.sh did in card #149.)
+        docs/serve/*) return 0 ;;
+        scripts/serve-boot-check.py|scripts/batch-variance.py|scripts/incident-timeline.py|scripts/per-caller-cache.py|scripts/agent-prompt-sizes.py|scripts/trie-error.py) return 0 ;;
+        # card #423 (lead decision, same class as docs/serve just above): docs/measurements/ and
+        # docs/incidents/ are the record of OUR fleet's measurements and incidents - pinned
+        # snapshots on OUR serve host, OUR gate's shadow-log records, per-card tb citations, and
+        # each measurement's reproduce block points at one of the ops scripts excluded above (or
+        # at an already-excluded one). A stranger has nothing to reproduce them with. The
+        # committed test of one of those scripts ships in scripts/tests/ and would point readers
+        # at the script and at gate/ paths the export does not carry, so it goes with its script.
+        docs/measurements/*|docs/incidents/*|scripts/tests/test_trie_error.py) return 0 ;;
         *) return 1 ;;
     esac
 }

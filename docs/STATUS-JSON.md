@@ -73,7 +73,7 @@ All timestamps are unix seconds (UTC). `null` means "not known", never zero.
 | `down_since` | int\|null | start of the open `serve_down` incident |
 | `seconds_to_drain_charged` | number\|null | added 2026-09-23 (#279): the gate's own estimate of how long its in-flight CHARGED tokens take to drain at the engine's recent prefill rate, straight from `/gate/health` `shadow.seconds_to_drain_charged` (published since v5.10, card #154). `null` = no gateway, a gateway older than v5.10, or no prefill rate to divide by - never 0, which would read as "drains instantly" |
 | `running`, `queue` | number | `sglang:num_running_reqs` / `num_queue_reqs`, engine total (`priority=""`, `tp_rank="0"`) |
-| `slots` | int | max concurrent requests (`max_running_requests`) |
+| `slots` | int | max concurrent requests (`max_running_requests`) - read from the engine when first needed, then re-read whenever the served model id or the serve container's start time changes and at least every 300 s (`LSS_SLOTS_RECHECK_SECS` overrides; 0 = every poll), so a restart that changes it is caught within one interval; a configured `slots` value is never re-fetched, and a failed fetch is retried (never kept as truth, so it drops to 0) |
 | `decode_tok_s` | number | `sglang:gen_throughput` |
 | `decode_tok_s_from_probe` | bool | `true` = `decode_tok_s` is the monitor's own C1 probe, not a figure the engine published (this engine publishes no speed). Say so wherever you show the number rather than passing it off as the engine's |
 | `kv_usage` | number 0..1 | `token_usage` (falls back to `kv_used_tokens / max_total_num_tokens`) |
@@ -518,6 +518,57 @@ ceiling admission actually was.
 `lss status`'s LANE line and the overview's LANES panel show `inflight N of BUDGET tok (P%)`
 when a budget is published, and the plain token count when it is not (public, or an older gate) -
 never an invented "of 0".
+
+## Added 2026-09-25: per-caller cap on the trusted lane, SHADOW (all additive; card #345)
+Gateway-side only: these fields are on `/gate/health` and on the gate's shadow-log admission
+records; `lss status` does not carry them onto `/status` yet. Mode is `TRUSTED_CALLER_CAP_MODE`
+(`shadow` default: record and still admit · `enforce`: 429, card #348 · `off`).
+| key | type | meaning |
+|---|---|---|
+| `/gate/health` `admission.trusted.caller_cap.mode` | string | `shadow` \| `enforce` \| `off` |
+| `…caller_cap.max_inflight`, `…caller_cap.budget_share`, `…caller_cap.share_tokens` | number | the default cap every trusted caller gets: requests in flight (3), fraction of `budget_tokens` (0.5), and that fraction in tokens |
+| `…caller_cap.waiting_callers` | string[] | callers with a request waiting for budget right now - the cap only bites while this holds someone OTHER than the caller being judged |
+| `…caller_cap.callers.<id>` | object | `{inflight, charged, would_refuse}` per caller: requests admitted and in flight, tokens charged in flight, would-refuse verdicts since gate start. `<id>` is `key:<name>`, `ip:<source ip>` (keyless) or `unknown`. A caller drops out once it has nothing in flight and no would-refuse |
+| admission record `caller_cap` | object | `{mode, caller, inflight, charged, others_waiting, would_refuse, reason}` - the verdict for THIS request, with the caller's in-flight count and charge BEFORE it. `would_refuse: true` with `did_admit: true` is the normal shadow shape. `reason: "not_budget_upstream"` = a request for another machine (card #210), never capped here |
+
+## Added 2026-09-25: charged_trie_est + request_id on the shadow log records (all additive; card #361)
+Gateway-side only, on the gate's shadow-log records (`<gateway state dir>/shadow/shadow.jsonl`);
+`lss status` does not carry them onto `/status`. Both decide NOTHING - shadow columns beside the
+real charge, in the #186 pattern. The #157 panel (Kwon/Zheng/Dholakia, notes on card #157) named
+this pair as the first step of the floor removal.
+| key | type | meaning |
+|---|---|---|
+| admission record `charged_trie_est` | number\|null | what this gate would charge THIS request off the TRIE's per-request uncached estimate (`trie_uncached_est`, bytes/4 basis) instead of the engine-wide gauge - floor 0, same `est_tokens`, card #155's cap applied by the SAME `_cap_unverified` call as `charged_tokens` and `charged_floorless_est`. It is the per-request-estimate side of the flip comparison: `charged_floorless_est` is what a floorless GAUGE flip would charge, this is what a floorless TRIE flip would charge; the p99 gap between them and the engine's truth (`reported_prompt_tokens * (1 - cached_fraction)` on the outcome record, joined via `request_id`) is what step 3's data is read on. `null` on several paths, never 0 (the #156 lesson) - WHY is on `charged_trie_est_null_reason` (card #366; before it, "null" read as "the trie did not look" even when the trie had looked and only the charge branch skipped the pricing). Computed after the charge is final, in its own try (card #367): a failure pricing it can only null this field, never move `charged_tokens`. Nothing in admission reads it: `charged_tokens`, every verdict and the budget are unchanged |
+| admission record `charged_trie_est_null_reason` | string\|null | card #366: `null` exactly when `charged_trie_est` is a number; otherwise the FIRST reason it was not priced: `not_budget_local` (a request for another machine, card #210 - charged 0) \| `snapshot_stale` (the engine snapshot failed or is stale - charged gross, card #68) \| `cache_cold` (engine restart or gate-start grace - charged gross) \| `charge_error` (the charge path raised and charged gross; `/gate/health` counts it) \| `trie_skipped` (the discount branch ran, but the trie had no prompt to key on - `trie_skipped` on the outcome record says why) \| `trie_error` (the discount branch ran, but the trie hook failed and left no estimate) \| `trie_estimate_invalid` (an estimate existed but could not be priced, e.g. non-numeric/NaN/inf - the charge is unchanged). The first four are also the charge branch that was taken; the last three mean the gauge discount DID run. Decides nothing |
+| admission record `request_id`, outcome record `request_id` | string | one uuid4 hex, generated once per request at the start of `handle_chat`, written on BOTH the admission and the outcome record of that request. The first field unique per request in this log: every per-request admission↔outcome join (estimate vs engine truth, admission-vs-outcome deltas) reads this key. Before it, the #156 measurement could only join outcome records to themselves and no admission-side number could be reconciled against its own outcome |
+
+## Added 2026-09-25: the TRUE drain view - queued_uncached ledger, prefill_state, would_refuse_drain (all additive; card #362, 154a)
+Gateway-side only, built on a per-request ledger in the shadow (`ShadowMode`): a running sum over
+IN-FLIGHT trusted requests of (admitted `est_tokens` minus the trie's CONFIRMED credit for that
+request), added at admission and removed at that request's outcome IN THE SAME try/finally as the
+budget release, so it cannot outlive the requests it counts. The #157 panel (Kwon/Zheng/Dholakia)
+voted DEFER on binding refusal; this LOGS and COUNTS and decides nothing - the `caller_cap` shadow
+pattern. Threshold derivation: documented in the gate's own (private) config docs; the public
+surface carries only the value and its env override (`DRAIN_SHADOW_THRESHOLD_S`, default 50,089 s =
+healthy-day p99.9 x 2 of the OLD gauge-based series; a starting point to be re-derived from this
+series once it has real history). HONESTY NOTE: that old series over-charges ~25x (the #156
+finding), which puts the line ~168x above the series' own healthy p50 drain (297.2 s), so the
+default threshold is expected to NEVER fire - the threshold arm is inert until the value is
+re-derived from `seconds_to_drain_uncached` after 24 h of v5.14 data (tracked on card #154); only
+the `stalled` arm can fire meanwhile.
+| key | type | meaning |
+|---|---|---|
+| `/gate/health` `shadow.queued_uncached` | number\|null | the TRUE in-flight uncached-prefill total right now (the ledger above), NOT the budget's gauge-derived `queued_charged` that sits beside it. `null` = an older gate or a shadow that cannot answer - never a fabricated 0 |
+| `/gate/health` `shadow.prefill_state` | string | `idle` (ledger below 1 token) \| `ok` (work in flight AND a live measured `prefill_tok_s`) \| `stalled` (work in flight, rate UNKNOWN - Kwon's hang signature: the engine owes prefill work and is not reading) \| `unknown` (the shadow's own read failed; never conflated with the others) |
+| `/gate/health` `shadow.would_refuse_drain` | bool | what an ENFORCING drain rule WOULD refuse RIGHT NOW: `queued_uncached` at a rate needing more than `DRAIN_SHADOW_THRESHOLD_S` to drain, OR `prefill_state: stalled` with the queue at or above `DRAIN_STALLED_FLOOR_TOKENS` (1,000). The LIVE instantaneous read; the history is the counter below. Recorded and counted, NEVER applied - no request is refused by it |
+| `/gate/health` `shadow.would_refuse_drain_count` | object | card #362 r3: the monotonic per-arm counter for the verdicts written so far - `{threshold, stalled, total}` - incremented at the same moment each admission record writes `would_refuse_drain: true` (per arm: `stalled` when the record's `prefill_state` is `stalled`, else `threshold`), so the counter and the shadow log reconcile exactly. Since gate start; never decremented; decides nothing. `null` fields = an older gate or a shadow that cannot answer |
+| `/gate/health` `shadow.seconds_to_drain_uncached` | number\|null | `queued_uncached / prefill_tok_s`, seconds. `null` when the rate is unknown (never 0 - an unknown rate must read as unknown) |
+| `/gate/health` `shadow.drain_threshold_s` | number | the `DRAIN_SHADOW_THRESHOLD_S` in force (env-overridable; default from the gate's own (private) config docs' derivation) |
+| admission record `queued_uncached` | number | the ledger total AT THIS ADMISSION, including THIS request's own take (its admitted est minus its trie CONFIRMED credit) - the state this request was admitted INTO |
+| admission record `prefill_state` | string | the same three states as health, read at the same moment as the record's `prefill_tok_s` |
+| admission record `seconds_to_drain_uncached` | number\|null | the TRUE drain estimate for the recorded `queued_uncached` |
+| admission record `drain_threshold_s` | number | the threshold in force at this admission |
+| admission record `would_refuse_drain` | bool | the shadow verdict for THIS admission. `true` with `did_admit: true` is the expected shadow shape; each `true` record increments `/gate/health` `shadow.would_refuse_drain_count` (per arm: `stalled`/`threshold` by this record's `prefill_state`) - the count is of WRITTEN verdicts, never a live re-evaluation |
 
 ## Added 2026-09-21: page 1 redesign fields (all additive; card #51)
 3-expert panel verdict (lianmin-zheng, woosuk-kwon, hamel-husain): KV % alone reads as headroom

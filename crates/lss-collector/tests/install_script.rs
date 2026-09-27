@@ -377,7 +377,13 @@ impl Real {
             use std::io::Write;
             let mut stdin = child.stdin.take().unwrap();
             if piped {
-                stdin.write_all(stamped("acme/public-lss").as_bytes()).unwrap();
+                // bash may stop reading (exit) before the whole script is written - a refused
+                // install does exactly that. EPIPE here is not the verdict: the exit status and
+                // bash's own output below are, and every caller asserts on them.
+                match stdin.write_all(stamped("acme/public-lss").as_bytes()) {
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                    r => r.unwrap(),
+                }
             }
         }
         let out = child.wait_with_output().unwrap();

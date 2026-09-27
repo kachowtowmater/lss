@@ -151,6 +151,20 @@ const KV_ROLLUP_BACKFILL: &str = "rollup_backfilled_v2";
 const KV_GPU_HEALTH: &str = "gpu_health";
 /// the persistent token ledger (`lss_core::tokens::AllTime`): totals that survive serve restarts
 const KV_TOKENS_ALL_TIME: &str = "tokens_all_time";
+/// card #414: the slots re-read is tried at LEAST this often, even when the engine's identity
+/// never changed - a value that goes stale (a serve restarted with different flags) is
+/// discovered within one interval either way. `LSS_SLOTS_RECHECK_SECS` overrides it (the e2e
+/// tests set it to 0 so every poll re-asks); anything lower than a poll's own length degrades
+/// to "every poll", never faster.
+const SLOTS_RECHECK_SECS: i64 = 300;
+
+/// The effective re-read interval: the env override when it parses to >= 0, else the constant.
+/// (card #414 r4: the verifier's FAIL lines made the interval the only knob a test can turn -
+/// the fake engine cannot restart a container or change the model, and a 300 s clock is longer
+/// than any honest e2e wait.)
+fn slots_recheck_secs() -> i64 {
+    std::env::var("LSS_SLOTS_RECHECK_SECS").ok().and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(SLOTS_RECHECK_SECS).max(0)
+}
 
 fn main() {
     // card #298: `lss-collector cost-setup ...` - the cost wizard, its own argument set
@@ -510,7 +524,25 @@ fn run(mut cfg: Config, home: &str) {
     }
 
     let mut slots = cfg.slots;
+    // card #414: slots are only as good as the last successful fetch. Anything that says the
+    // engine is not the one we asked last (it came up, the container restarted - the serve
+    // container's START TIME moved -, the scrape names a different model - the served id is
+    // the identity a loadout is keyed on, so a restart that re-serves a different id is SEEN;
+    // a restart that changes nothing the collector can watch is caught by plain age) - or
+    // plain age (slots_recheck_secs()) - sends us to ask again; a fetch that fails leaves
+    // `slots` at 0 (never "kept as truth") and is retried next poll. `slots_fetched` is the
+    // "we have asked successfully once" marker, NOT `slots_at == 0`: in tests (and on a clock
+    // that starts at 0) a successful fetch at t=0 leaves slots_at 0, which would re-fetch on
+    // every poll (observed: 3 red gate tests at 1d7c0e8).
+    // The three identity keys are exercised on the REAL loop by tests/slots_refresh.rs:
+    // served model id + container start time change the ask immediately; a same-id
+    // restart (a new max_running_requests with no other signal) is caught by the periodic
+    // re-read, `LSS_SLOTS_RECHECK_SECS`-overridable for the e2e that cannot wait 300 s.
     let mut was_up = false;
+    let mut slots_fetched = false;
+    let mut slots_model: Option<String> = None;
+    let mut slots_container: Option<i64> = None;
+    let mut slots_at = 0_i64;
     let mut saved_state = (String::new(), String::new());
     let mut last_prune = 0_i64;
     let mut last_flush = started_at;
@@ -525,8 +557,27 @@ fn run(mut cfg: Config, home: &str) {
         let r = poller.poll(now);
         let mut sample = r.sample;
 
-        if sample.serve_up && (!was_up || slots == 0) && cfg.slots == 0 {
-            slots = poller.fetch_slots().unwrap_or(slots);
+        // card #414: the engine's slot count is re-read whenever it may have changed - the serve
+        // just came up, its container restarted (a new START TIME even under the same name),
+        // the scrape names a different model (the served id is the identity `lss` already keys
+        // a loadout on), the last value aged out - and always retried when unknown (0) or the
+        // last fetch failed. `cfg.slots` (a configured number) is never second-guessed.
+        if cfg.slots == 0 && sample.serve_up && (!slots_fetched || slots == 0 || !was_up || now - slots_at >= slots_recheck_secs()
+            || sample.model.as_deref() != slots_model.as_deref()
+            || sample.serve_ct.as_ref().map(|c| c.started_at) != slots_container)
+        {
+            let fresh = poller.fetch_slots();
+            match fresh {
+                Some(n) => {
+                    slots = n;
+                    slots_fetched = true;
+                    slots_model = sample.model.clone();
+                    slots_container = sample.serve_ct.as_ref().map(|c| c.started_at);
+                    slots_at = now;
+                }
+                // a failed fetch is retried next poll; the old number is not kept as truth
+                None => slots = 0,
+            }
         }
         was_up = sample.serve_up;
         sample.slots = slots;
