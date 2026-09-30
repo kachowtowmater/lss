@@ -31,7 +31,7 @@ mod exec_file;
 mod tokens_run;
 mod watch_run;
 
-use collect::{Poller, find_gpu_source, xid_scan_gate};
+use collect::{find_gpu_source, xid_scan_gate, Poller};
 use db::{Db, Retention};
 use lss_core::config::{expand_home, parse_config, Config};
 use lss_core::history::{History, StatusInputs, HISTORY_SECS};
@@ -44,7 +44,10 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub fn unix_now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// LOCK ORDER (card #109) - THE RULE FOR THIS BINARY: the long-lived mutexes are acquired in
@@ -163,7 +166,11 @@ const SLOTS_RECHECK_SECS: i64 = 300;
 /// the fake engine cannot restart a container or change the model, and a 300 s clock is longer
 /// than any honest e2e wait.)
 fn slots_recheck_secs() -> i64 {
-    std::env::var("LSS_SLOTS_RECHECK_SECS").ok().and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(SLOTS_RECHECK_SECS).max(0)
+    std::env::var("LSS_SLOTS_RECHECK_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .unwrap_or(SLOTS_RECHECK_SECS)
+        .max(0)
 }
 
 fn main() {
@@ -192,7 +199,12 @@ fn main() {
             }
             "--check-config" => check_only = true,
             "--detect" => detect_only = true,
-            "--test-alert" => test_alert = Some(args.next().unwrap_or_else(|| die("--test-alert needs a message"))),
+            "--test-alert" => {
+                test_alert = Some(
+                    args.next()
+                        .unwrap_or_else(|| die("--test-alert needs a message")),
+                )
+            }
             "--version" | "-V" => {
                 println!("lss-collector {}", env!("CARGO_PKG_VERSION"));
                 return;
@@ -236,20 +248,34 @@ fn main() {
 
 /// Client side of `--test-alert`: talks to the running collector, then waits for the row.
 fn send_test_alert(cfg: &Config, msg: &str) -> i32 {
-    let Some(addr) = cfg.listen.iter().find(|a| a.parse::<std::net::SocketAddr>().is_ok_and(|s| s.ip().is_loopback())) else {
+    let Some(addr) = cfg.listen.iter().find(|a| {
+        a.parse::<std::net::SocketAddr>()
+            .is_ok_and(|s| s.ip().is_loopback())
+    }) else {
         eprintln!("lss-collector: no 127.0.0.1 address in `listen`: the test-alert endpoint is loopback-only");
         return 2;
     };
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(5)).build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(5))
+        .build();
     let sent_at = unix_now();
-    let want = match agent.post(&format!("http://{addr}/test-alert")).send_string(msg) {
+    let want = match agent
+        .post(&format!("http://{addr}/test-alert"))
+        .send_string(msg)
+    {
         Ok(r) => {
             let body = r.into_string().unwrap_or_default();
             print!("collector accepted it: {body}");
-            serde_json::from_str::<serde_json::Value>(&body).ok().and_then(|v| v["message"].as_str().map(String::from)).unwrap_or_default()
+            serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(String::from))
+                .unwrap_or_default()
         }
         Err(ureq::Error::Status(code, r)) => {
-            eprintln!("lss-collector: collector refused the test alert: HTTP {code} {}", r.into_string().unwrap_or_default().trim());
+            eprintln!(
+                "lss-collector: collector refused the test alert: HTTP {code} {}",
+                r.into_string().unwrap_or_default().trim()
+            );
             return 1;
         }
         Err(e) => {
@@ -260,9 +286,17 @@ fn send_test_alert(cfg: &Config, msg: &str) -> i32 {
     // the poll loop picks it up on its next turn; then the row is in the DB and in /status
     for _ in 0..(cfg.poll_secs.max(1) * 4 + 10) {
         std::thread::sleep(Duration::from_secs(1));
-        let Ok(body) = collect::http_get(&agent, &format!("http://{addr}/status")) else { continue };
+        let Ok(body) = collect::http_get(&agent, &format!("http://{addr}/status")) else {
+            continue;
+        };
         let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-        let row = v["alerts"].as_array().and_then(|rows| rows.iter().find(|r| r["rule"] == lss_core::rules::RULE_TEST_ALERT && r["message"] == want.as_str() && r["ts"].as_i64().is_some_and(|t| t >= sent_at - 1)));
+        let row = v["alerts"].as_array().and_then(|rows| {
+            rows.iter().find(|r| {
+                r["rule"] == lss_core::rules::RULE_TEST_ALERT
+                    && r["message"] == want.as_str()
+                    && r["ts"].as_i64().is_some_and(|t| t >= sent_at - 1)
+            })
+        });
         if let Some(row) = row {
             println!("alerts row: {row}");
             println!("alert_cmd is running now; `delivered` turns true when a leg gets through (mail to a busy agent is spooled and flips it later). See: lss alerts");
@@ -287,8 +321,10 @@ fn run(mut cfg: Config, home: &str) {
     if cfg.host.trim().is_empty() {
         cfg.host = collect::host_name();
     }
-    // #36, 2026-09-21: omp's shared config, watched (never written) for a stale default model
-    let omp_config_path = (!cfg.rules.omp_config_path.trim().is_empty()).then(|| expand_home(&cfg.rules.omp_config_path, home));
+    // #36, 2026-09-21; #514, 2026-09-29: omp's shared config, watched (never written) for a
+    // stale default model - OPT-IN: empty `omp_config_path` (the default) means not watched.
+    let omp_config_path = (!cfg.rules.omp_config_path.trim().is_empty())
+        .then(|| expand_home(&cfg.rules.omp_config_path, home));
     // #75, 2026-09-22: the OWNER's real electricity rate table - loaded once at startup, same as
     // every other config; a rates.toml edited later needs a restart, same as collector.toml.
     // Missing/unset/unparsable is never fatal and never an error: cost tracking is simply off
@@ -298,7 +334,15 @@ fn run(mut cfg: Config, home: &str) {
         .and_then(|p| std::fs::read_to_string(&p).ok().map(|t| (p, t)))
         .and_then(|(p, t)| match lss_core::rates::parse_rates_file(&t) {
             Ok(table) => {
-                eprintln!("rates: {p}: {} ({})", table.name, if table.is_flat() { "flat" } else { "time-of-use" });
+                eprintln!(
+                    "rates: {p}: {} ({})",
+                    table.name,
+                    if table.is_flat() {
+                        "flat"
+                    } else {
+                        "time-of-use"
+                    }
+                );
                 Some(table)
             }
             Err(e) => {
@@ -308,19 +352,34 @@ fn run(mut cfg: Config, home: &str) {
         });
     // #74, 2026-09-22: read back whatever a watch-sweep wrote - this collector never fetches
     // anything itself. Re-checked every poll (mtime-cheap), never the fetch loop's concern.
-    let mut watcher = watch_run::Watcher::new(if cfg.watch.path.trim().is_empty() { String::new() } else { expand_home(&cfg.watch.path, home) });
+    let mut watcher = watch_run::Watcher::new(if cfg.watch.path.trim().is_empty() {
+        String::new()
+    } else {
+        expand_home(&cfg.watch.path, home)
+    });
     let db_path = expand_home(&cfg.db_path, home);
     if let Some(dir) = std::path::Path::new(&db_path).parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let db = Db::open(&db_path).unwrap_or_else(|e| die(&format!("{db_path}: {e}")));
-    eprintln!("lss-collector {} starting: db={db_path} poll={}s", env!("CARGO_PKG_VERSION"), cfg.poll_secs);
+    eprintln!(
+        "lss-collector {} starting: db={db_path} poll={}s",
+        env!("CARGO_PKG_VERSION"),
+        cfg.poll_secs
+    );
 
     let mut engine: Engine = load_state(&db, "engine");
     let mut tracker: IncidentTracker = load_state(&db, "tracker");
-    let keep = Retention { raw: i64::from(cfg.raw_hours) * 3600, m1: i64::from(cfg.retention_days) * 86_400, m10: i64::from(cfg.rollup_10m_days) * 86_400 };
+    let keep = Retention {
+        raw: i64::from(cfg.raw_hours) * 3600,
+        m1: i64::from(cfg.retention_days) * 86_400,
+        m10: i64::from(cfg.rollup_10m_days) * 86_400,
+    };
     let mut history = History::default();
-    for s in db.samples_since(started_at - HISTORY_SECS).unwrap_or_default() {
+    for s in db
+        .samples_since(started_at - HISTORY_SECS)
+        .unwrap_or_default()
+    {
         history.push(s);
     }
     // the rollup buckets that were open when the last run stopped are rebuilt from the stored
@@ -329,7 +388,12 @@ fn run(mut cfg: Config, home: &str) {
     let open_from = started_at - started_at.rem_euclid(600);
     pipeline.replay(&db, history.iter().filter(|s| s.ts >= open_from).cloned());
     let first_sample_ts = db.first_sample_ts().ok().flatten().unwrap_or(started_at);
-    let first_seen: i64 = match db.kv_get(KV_FIRST_SAMPLE).ok().flatten().and_then(|v| v.parse().ok()) {
+    let first_seen: i64 = match db
+        .kv_get(KV_FIRST_SAMPLE)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+    {
         Some(t) => t,
         None => {
             let _ = db.kv_set(KV_FIRST_SAMPLE, &first_sample_ts.to_string());
@@ -354,7 +418,9 @@ fn run(mut cfg: Config, home: &str) {
                 eprintln!("repair: probe at {ts} was wrongly invalidated by the reverted cold-clock check - restored to valid");
             }
         }
-        Err(e) => eprintln!("repair: could not undo the cold-clock check's false invalidations: {e}"),
+        Err(e) => {
+            eprintln!("repair: could not undo the cold-clock check's false invalidations: {e}")
+        }
     }
     // startup sanity check (card #45): a probe the old idle gate missed - `running` never saw a
     // request that started and finished between two 5 s poll scrapes, but the stored samples'
@@ -392,7 +458,8 @@ fn run(mut cfg: Config, home: &str) {
     // #105, 2026-09-22 (verifier): once a real [rates] table is configured it is authoritative
     // for cost (an effective date, what it excludes - this old card-#6 path has neither) - see
     // `loadouts::effective_usd_per_kwh`'s own doc comment.
-    loadouts.usd_per_kwh = loadouts::effective_usd_per_kwh(cfg.electricity_usd_per_kwh, rates_table.is_some());
+    loadouts.usd_per_kwh =
+        loadouts::effective_usd_per_kwh(cfg.electricity_usd_per_kwh, rates_table.is_some());
     loadouts.min_tok_s_per_user = cfg.targets.min_tok_s_per_user;
     let mut targets_now = lss_core::targets::TargetsStatus::default();
     // the gate log of the last 24 h, merged once a minute: each user's own experience
@@ -405,7 +472,17 @@ fn run(mut cfg: Config, home: &str) {
         // is where "all time" begins, and the fastest minute on record is the first peak
         let total = |m: &str| db.rollup_sum(600, m, 0, started_at + 1).unwrap_or(0.0);
         all_time.since = first_sample_ts;
-        (all_time.generated.total, all_time.prompt.total, all_time.cached.total, all_time.requests.total) = (total("tok_gen"), total("tok_prompt"), total("tok_cached"), total("sum_requests"));
+        (
+            all_time.generated.total,
+            all_time.prompt.total,
+            all_time.cached.total,
+            all_time.requests.total,
+        ) = (
+            total("tok_gen"),
+            total("tok_prompt"),
+            total("tok_cached"),
+            total("sum_requests"),
+        );
         let _ = db.rollup_rows(600, "decode_tok_s", 0, started_at + 1, |ts, a| {
             if a.max > all_time.peak.tok_s {
                 all_time.peak = lss_core::tokens::Peak { tok_s: a.max, ts };
@@ -437,15 +514,24 @@ fn run(mut cfg: Config, home: &str) {
     // Rows and engine state from before probe validation existed: judge the old rows by their
     // TTFT, then rebuild the baseline (and drop any streak) from valid probes only. Once.
     match db.invalidate_legacy_probes(cfg.rules.c1_max_ttft_s * 1000.0) {
-        Ok(n) if n > 0 => eprintln!("probes: {n} stored probe(s) marked invalid (slow TTFT / skipped / failed)"),
+        Ok(n) if n > 0 => {
+            eprintln!("probes: {n} stored probe(s) marked invalid (slow TTFT / skipped / failed)")
+        }
         Ok(_) => {}
         Err(e) => eprintln!("probes: legacy validation failed: {e}"),
     }
     if engine.c1_needs_revalidation() {
         let before = engine.c1_baseline(&cfg.rules);
-        let valid = db.recent_valid_tok_s(cfg.rules.c1_baseline_probes.max(1)).unwrap_or_default();
+        let valid = db
+            .recent_valid_tok_s(cfg.rules.c1_baseline_probes.max(1))
+            .unwrap_or_default();
         engine.relearn_c1_baseline(&cfg.rules, &valid);
-        eprintln!("c1: baseline re-learned from the last {} valid probe(s): {:?} -> {:?}", valid.len(), before, engine.c1_baseline(&cfg.rules));
+        eprintln!(
+            "c1: baseline re-learned from the last {} valid probe(s): {:?} -> {:?}",
+            valid.len(),
+            before,
+            engine.c1_baseline(&cfg.rules)
+        );
     }
     // card #261: the startup repairs above can re-judge a probe the rule engine already counted
     // toward its low-decode streak; a streak is only as good as the probes it names
@@ -459,15 +545,36 @@ fn run(mut cfg: Config, home: &str) {
     // Where the Xid back-fill starts: a back-fill that never finished, else the point the hot
     // path had reached, else (first start ever) 7 days back. The 7-day read therefore happens
     // ONCE; a restart only re-reads the time the collector was not running.
-    let kv_ts = |k: &str| db.kv_get(k).ok().flatten().and_then(|v| v.parse::<i64>().ok());
-    let backfill_from = kv_ts(KV_XID_BACKFILL_FROM).or_else(|| kv_ts(KV_XID_SCAN_UNTIL)).unwrap_or(0).max(started_at - 7 * 86_400);
+    let kv_ts = |k: &str| {
+        db.kv_get(k)
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<i64>().ok())
+    };
+    let backfill_from = kv_ts(KV_XID_BACKFILL_FROM)
+        .or_else(|| kv_ts(KV_XID_SCAN_UNTIL))
+        .unwrap_or(0)
+        .max(started_at - 7 * 86_400);
     let _ = db.kv_set(KV_XID_BACKFILL_FROM, &backfill_from.to_string());
-    let state_dir = std::path::Path::new(&db_path).parent().map(std::path::Path::to_path_buf).unwrap_or_else(|| ".".into());
+    let state_dir = std::path::Path::new(&db_path)
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| ".".into());
 
     let seed_ttft = ttft_baseline(&db);
     let db = Arc::new(Mutex::new(db));
-    let shared = Arc::new(Mutex::new(Shared { c1_ttft_baseline_ms: seed_ttft, ..Shared::default() }));
-    let bench_ctx = Arc::new(bench_run::BenchCtx { cfg: cfg.clone(), home: home.to_string(), db: db.clone(), shared: shared.clone(), state_dir: state_dir.clone(), poll: Duration::from_secs(cfg.bench.poll_secs.max(1)) });
+    let shared = Arc::new(Mutex::new(Shared {
+        c1_ttft_baseline_ms: seed_ttft,
+        ..Shared::default()
+    }));
+    let bench_ctx = Arc::new(bench_run::BenchCtx {
+        cfg: cfg.clone(),
+        home: home.to_string(),
+        db: db.clone(),
+        shared: shared.clone(),
+        state_dir: state_dir.clone(),
+        poll: Duration::from_secs(cfg.bench.poll_secs.max(1)),
+    });
     bench_run::recover(&bench_ctx, started_at);
     // card #109: read from `db` FIRST, then take `shared` - never one inside the other. This is
     // the ONE rule for these two mutexes (see LOCK ORDER above): hold at most one at a time.
@@ -493,7 +600,11 @@ fn run(mut cfg: Config, home: &str) {
 
     for addr in cfg.listen.clone() {
         let shared = shared.clone();
-        let source = http::HistorySource { db_path: db_path.clone(), keep, probe_ip: query::probe_ip_of(&cfg.gate_url) };
+        let source = http::HistorySource {
+            db_path: db_path.clone(),
+            keep,
+            probe_ip: query::probe_ip_of(&cfg.gate_url),
+        };
         let bench = bench_ctx.clone();
         std::thread::spawn(move || http::serve_forever(addr, shared, source, bench));
     }
@@ -501,9 +612,20 @@ fn run(mut cfg: Config, home: &str) {
         // a database from before the rollup tiers: build them once from the stored samples, on
         // its own connection and thread so the poll loop never waits for it
         let path = db_path.clone();
-        std::thread::spawn(move || match Db::open(&path).and_then(|db| rollup::backfill(&db, open_from).and_then(|n| db.kv_set(KV_ROLLUP_BACKFILL, &unix_now().to_string()).map(|()| n))) {
-            Ok(n) => eprintln!("rollup backfill: {n} stored sample(s) folded into the 1m/10m tiers"),
-            Err(e) => eprintln!("rollup backfill failed: {e} - will be retried on the next start"),
+        std::thread::spawn(move || {
+            match Db::open(&path).and_then(|db| {
+                rollup::backfill(&db, open_from).and_then(|n| {
+                    db.kv_set(KV_ROLLUP_BACKFILL, &unix_now().to_string())
+                        .map(|()| n)
+                })
+            }) {
+                Ok(n) => {
+                    eprintln!("rollup backfill: {n} stored sample(s) folded into the 1m/10m tiers")
+                }
+                Err(e) => {
+                    eprintln!("rollup backfill failed: {e} - will be retried on the next start")
+                }
+            }
         });
     }
     // card #85 item 2: the Xid backfill shells nvidia-smi + journalctl - pointless (and a
@@ -515,7 +637,11 @@ fn run(mut cfg: Config, home: &str) {
     }
     let (alert_tx, alert_rx) = mpsc::channel();
     {
-        let (cmd, db, dir) = (expand_home(&cfg.alert_cmd, home), db.clone(), state_dir.clone());
+        let (cmd, db, dir) = (
+            expand_home(&cfg.alert_cmd, home),
+            db.clone(),
+            state_dir.clone(),
+        );
         std::thread::spawn(move || alert::run_loop(cmd, dir, alert_rx, db));
     }
     if cfg.probe.enabled {
@@ -562,9 +688,14 @@ fn run(mut cfg: Config, home: &str) {
         // the scrape names a different model (the served id is the identity `lss` already keys
         // a loadout on), the last value aged out - and always retried when unknown (0) or the
         // last fetch failed. `cfg.slots` (a configured number) is never second-guessed.
-        if cfg.slots == 0 && sample.serve_up && (!slots_fetched || slots == 0 || !was_up || now - slots_at >= slots_recheck_secs()
-            || sample.model.as_deref() != slots_model.as_deref()
-            || sample.serve_ct.as_ref().map(|c| c.started_at) != slots_container)
+        if cfg.slots == 0
+            && sample.serve_up
+            && (!slots_fetched
+                || slots == 0
+                || !was_up
+                || now - slots_at >= slots_recheck_secs()
+                || sample.model.as_deref() != slots_model.as_deref()
+                || sample.serve_ct.as_ref().map(|c| c.started_at) != slots_container)
         {
             let fresh = poller.fetch_slots();
             match fresh {
@@ -603,25 +734,43 @@ fn run(mut cfg: Config, home: &str) {
             xids: &r.xids,
         });
 
-        let (probe_results, test_alerts, bench_active, bench_gen, bench_profile): (Vec<ProbeRecord>, Vec<String>, bool, u64, Option<String>) = {
+        let (probe_results, test_alerts, bench_active, bench_gen, bench_profile): (
+            Vec<ProbeRecord>,
+            Vec<String>,
+            bool,
+            u64,
+            Option<String>,
+        ) = {
             let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
             let idle_from = now - cfg.bench.idle_secs.max(60) - 60;
             // #54, 2026-09-21: kept for its own bookkeeping (a test checks this list's length) -
             // the idle gate no longer reads it, it judges quiet by the token counter instead
             s.bench.own_requests.retain(|t| *t >= idle_from);
-            (std::mem::take(&mut s.probe_results), std::mem::take(&mut s.test_alerts), s.bench.active, s.bench.generation, s.bench.brief.profile.clone())
+            (
+                std::mem::take(&mut s.probe_results),
+                std::mem::take(&mut s.test_alerts),
+                s.bench.active,
+                s.bench.generation,
+                s.bench.brief.profile.clone(),
+            )
         };
         let (maintenance_active, maintenance_reason) = {
             let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
             // a forgotten `lss maintenance stop` must not mute restart alerts forever
             if lss_core::maintenance::expired(&s.maintenance, now) {
-                eprintln!("maintenance: window auto-expired ({})", s.maintenance.reason);
+                eprintln!(
+                    "maintenance: window auto-expired ({})",
+                    s.maintenance.reason
+                );
                 lss_core::maintenance::stop(&mut s.maintenance, now);
             }
             (s.maintenance.active, s.maintenance.reason.clone())
         };
         if let Some((from, until)) = r.journal_gap {
-            eprintln!("kernel journal was unreadable for {}s: streaming the gap for Xids", until - from);
+            eprintln!(
+                "kernel journal was unreadable for {}s: streaming the gap for Xids",
+                until - from
+            );
             spawn_xid_backfill(db.clone(), from, Some(until), false);
         }
         let mut restarts = Vec::new();
@@ -630,11 +779,15 @@ fn run(mut cfg: Config, home: &str) {
         // so the charts are annotated and nobody mistakes the load for users
         if bench_active != bench_was_active {
             let res = if bench_active {
-                eprintln!("incident OPEN bench: lss bench {}", bench_profile.clone().unwrap_or_default());
+                eprintln!(
+                    "incident OPEN bench: lss bench {}",
+                    bench_profile.clone().unwrap_or_default()
+                );
                 dbl.open_incident(lss_core::incidents::KIND_BENCH, now, &format!("lss bench {} running: the load is the benchmark's; queue and C1 alerts stand down", bench_profile.clone().unwrap_or_default()))
             } else {
                 eprintln!("incident CLOSE bench");
-                dbl.close_incident(lss_core::incidents::KIND_BENCH, now).map(|_| ())
+                dbl.close_incident(lss_core::incidents::KIND_BENCH, now)
+                    .map(|_| ())
             };
             if let Err(e) = res {
                 eprintln!("db: bench incident write failed: {e}");
@@ -647,10 +800,15 @@ fn run(mut cfg: Config, home: &str) {
         if maintenance_active != maintenance_was_active {
             let res = if maintenance_active {
                 eprintln!("incident OPEN maintenance: {maintenance_reason}");
-                dbl.open_incident(lss_core::incidents::KIND_MAINTENANCE, now, &format!("planned maintenance: {maintenance_reason}"))
+                dbl.open_incident(
+                    lss_core::incidents::KIND_MAINTENANCE,
+                    now,
+                    &format!("planned maintenance: {maintenance_reason}"),
+                )
             } else {
                 eprintln!("incident CLOSE maintenance");
-                dbl.close_incident(lss_core::incidents::KIND_MAINTENANCE, now).map(|_| ())
+                dbl.close_incident(lss_core::incidents::KIND_MAINTENANCE, now)
+                    .map(|_| ())
             };
             if let Err(e) = res {
                 eprintln!("db: maintenance incident write failed: {e}");
@@ -663,20 +821,38 @@ fn run(mut cfg: Config, home: &str) {
         }
         for op in ops {
             let res = match op {
-                IncidentOp::Open { kind, start, detail } => {
+                IncidentOp::Open {
+                    kind,
+                    start,
+                    detail,
+                } => {
                     eprintln!("incident OPEN {kind}: {detail}");
                     dbl.open_incident(kind, start, &detail)
                 }
-                IncidentOp::Close { kind, end, duration_secs } => {
+                IncidentOp::Close {
+                    kind,
+                    end,
+                    duration_secs,
+                } => {
                     eprintln!("incident CLOSE {kind} after {duration_secs}s");
                     dbl.close_incident(kind, end).map(|_| ())
                 }
-                IncidentOp::Event { kind, ts, subject, detail, key } => {
+                IncidentOp::Event {
+                    kind,
+                    ts,
+                    subject,
+                    detail,
+                    key,
+                } => {
                     eprintln!("incident {kind}: {detail}");
                     if kind == KIND_CONTAINER_RESTART {
-                        restarts.push(RestartObs { role: subject, detail: detail.clone() });
+                        restarts.push(RestartObs {
+                            role: subject,
+                            detail: detail.clone(),
+                        });
                     }
-                    dbl.event_incident(kind, ts, &detail, key.as_deref()).map(|_| ())
+                    dbl.event_incident(kind, ts, &detail, key.as_deref())
+                        .map(|_| ())
                 }
             };
             if let Err(e) = res {
@@ -689,13 +865,19 @@ fn run(mut cfg: Config, home: &str) {
             }
             if p.is_reading() {
                 let t = ttft_baseline(&dbl);
-                shared.lock().unwrap_or_else(|e| e.into_inner()).c1_ttft_baseline_ms = t;
+                shared
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .c1_ttft_baseline_ms = t;
             }
         }
 
-        // #36, 2026-09-21: omp's shared config on THIS box, watched (never written) against
-        // what the poll just saw served - a small local file, cheap to read every tick
-        let omp_default = omp_config_path.as_deref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| lss_core::omp::parse_default_model(&t));
+        // #36, 2026-09-21; #514, 2026-09-29: omp's shared config on THIS box, watched (never
+        // written) against what the poll just saw served - a small local file, cheap to read
+        let omp_default = omp_config_path
+            .as_deref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| lss_core::omp::parse_default_model(&t));
         let omp_mismatch = lss_core::omp::mismatch(omp_default.as_deref(), sample.model.as_deref());
 
         let obs = Observation {
@@ -712,12 +894,30 @@ fn run(mut cfg: Config, home: &str) {
             cache_hit_rate: sample.metrics.as_ref().map(|m| m.cache_hit_rate),
             rejected_413: sample.gate.as_ref().map(|g| g.rejected_413()),
             rejected_429: sample.gate.as_ref().map(|g| g.rejected_429()),
-            gpus: sample.gpus_ok.then(|| sample.gpus.iter().map(|g| GpuObs { index: g.index, temp_c: g.temp_c, throttle_mask: g.throttle_mask }).collect()),
+            gpus: sample.gpus_ok.then(|| {
+                sample
+                    .gpus
+                    .iter()
+                    .map(|g| GpuObs {
+                        index: g.index,
+                        temp_c: g.temp_c,
+                        throttle_mask: g.throttle_mask,
+                    })
+                    .collect()
+            }),
             xids: r.xids,
             restarts,
-            running_roles: containers.iter().filter(|(_, c)| c.running()).map(|(role, _)| (*role).to_string()).collect(),
+            running_roles: containers
+                .iter()
+                .filter(|(_, c)| c.running())
+                .map(|(role, _)| (*role).to_string())
+                .collect(),
             probe_tok_s: lss_core::probe::c1_reading(&probe_results),
-            probe_ts: probe_results.iter().rev().find(|p| p.is_reading()).map(|p| p.ts),
+            probe_ts: probe_results
+                .iter()
+                .rev()
+                .find(|p| p.is_reading())
+                .map(|p| p.ts),
             test_alerts,
             bench_active,
             probe_interval_secs: cfg.probe.interval_secs,
@@ -733,7 +933,11 @@ fn run(mut cfg: Config, home: &str) {
         for a in engine.evaluate(&cfg.rules, &obs) {
             match dbl.insert_alert(&a) {
                 Ok(id) => {
-                    let _ = alert_tx.send(alert::Job::Alert { id, severity: a.severity.as_str().to_string(), message: a.message.clone() });
+                    let _ = alert_tx.send(alert::Job::Alert {
+                        id,
+                        severity: a.severity.as_str().to_string(),
+                        message: a.message.clone(),
+                    });
                 }
                 Err(e) => eprintln!("db: alert write failed: {e} - {}", a.message),
             }
@@ -749,7 +953,11 @@ fn run(mut cfg: Config, home: &str) {
         if let Some(p) = probe_results.iter().rev().find(|p| p.is_reading()) {
             last_valid_probe = Some(p.clone());
         }
-        let gate_started = sample.gate_ct.as_ref().map(|c| c.started_at).filter(|t| *t > 0);
+        let gate_started = sample
+            .gate_ct
+            .as_ref()
+            .map(|c| c.started_at)
+            .filter(|t| *t > 0);
         if !probe_results.is_empty() || probe_share.map(|(t, _)| t) != gate_started {
             probe_share = gate_started.map(|t| (t, dbl.probes_admitted_since(t).unwrap_or(0)));
         }
@@ -759,16 +967,33 @@ fn run(mut cfg: Config, home: &str) {
         }
         loadouts.on_sample(&dbl, &sample, |name| match name {
             // a serve container: its image and launch arguments ARE the loadout
-            n if !n.is_empty() => poller.loadout_inspect(n).map(|i| lss_core::loadout::identity(sample.model.as_deref().unwrap_or_default(), &i.image, &i.args, &i.env)),
+            n if !n.is_empty() => poller.loadout_inspect(n).map(|i| {
+                lss_core::loadout::identity(
+                    sample.model.as_deref().unwrap_or_default(),
+                    &i.image,
+                    &i.args,
+                    &i.env,
+                )
+            }),
             // no container (a plain process, or no docker at all): the engine describes itself
-            _ => poller.engine_identity().map(|(kind, e)| lss_core::loadout::identity_from_engine(kind.name(), &e)),
+            _ => poller
+                .engine_identity()
+                .map(|(kind, e)| lss_core::loadout::identity_from_engine(kind.name(), &e)),
         });
         if let Some(m) = &sample.metrics {
             let epoch = sample.serve_ct.as_ref().map_or(0, |c| c.started_at);
-            all_time.observe(now, &lss_core::timeutil::fmt_local(now, "%Y-%m-%d"), epoch, m);
+            all_time.observe(
+                now,
+                &lss_core::timeutil::fmt_local(now, "%Y-%m-%d"),
+                epoch,
+                m,
+            );
             if now - all_time_saved_at >= 60 {
                 all_time_saved_at = now;
-                let _ = dbl.kv_set(KV_TOKENS_ALL_TIME, &serde_json::to_string(&all_time).unwrap_or_default());
+                let _ = dbl.kv_set(
+                    KV_TOKENS_ALL_TIME,
+                    &serde_json::to_string(&all_time).unwrap_or_default(),
+                );
             }
         }
         if now - own_probes.0 >= 60 {
@@ -776,8 +1001,28 @@ fn run(mut cfg: Config, home: &str) {
             // history does not: count only the probes sent since the gateway has known this
             // address. Otherwise EVERY request from the probe's address is taken for a probe and
             // somebody else's traffic (and rejections) on that address disappears from USERS.
-            let gate_knows_since = sample.gate.as_ref().and_then(|g| g.users.as_ref()).and_then(|users| users.iter().find(|u| u.lane == "trusted" && Some(u.user.as_str()) == query::probe_user_of(&cfg.gate_url).as_deref()).map(|u| u.first_seen as i64)).unwrap_or(0);
-            own_probes = (now, dbl.probes_logged_since((now - 3600).max(gate_knows_since)).unwrap_or(0), dbl.probes_logged_since((now - 86_400).max(gate_knows_since)).unwrap_or(0));
+            let gate_knows_since = sample
+                .gate
+                .as_ref()
+                .and_then(|g| g.users.as_ref())
+                .and_then(|users| {
+                    users
+                        .iter()
+                        .find(|u| {
+                            u.lane == "trusted"
+                                && Some(u.user.as_str())
+                                    == query::probe_user_of(&cfg.gate_url).as_deref()
+                        })
+                        .map(|u| u.first_seen as i64)
+                })
+                .unwrap_or(0);
+            own_probes = (
+                now,
+                dbl.probes_logged_since((now - 3600).max(gate_knows_since))
+                    .unwrap_or(0),
+                dbl.probes_logged_since((now - 86_400).max(gate_knows_since))
+                    .unwrap_or(0),
+            );
         }
         for p in &probe_results {
             loadouts.on_probe(p);
@@ -786,14 +1031,28 @@ fn run(mut cfg: Config, home: &str) {
             loadouts.on_window(&w);
         }
         if let Some(h) = r.health {
-            let facts = |v: &[lss_core::gpu::GpuHealth]| v.iter().cloned().map(|mut g| { g.ts = 0; g }).collect::<Vec<_>>();
+            let facts = |v: &[lss_core::gpu::GpuHealth]| {
+                v.iter()
+                    .cloned()
+                    .map(|mut g| {
+                        g.ts = 0;
+                        g
+                    })
+                    .collect::<Vec<_>>()
+            };
             if facts(&h) != facts(&gpu_health) {
                 // written only when something moved (an ECC count, a link width): it is a fact sheet, not a series
-                let _ = dbl.kv_set(KV_GPU_HEALTH, &serde_json::to_string(&h).unwrap_or_default());
+                let _ = dbl.kv_set(
+                    KV_GPU_HEALTH,
+                    &serde_json::to_string(&h).unwrap_or_default(),
+                );
             }
             gpu_health = h;
         }
-        let power_w = { let v: Vec<f64> = sample.gpus.iter().filter_map(|g| g.power_w).collect(); (!v.is_empty()).then(|| v.iter().sum::<f64>()) };
+        let power_w = {
+            let v: Vec<f64> = sample.gpus.iter().filter_map(|g| g.power_w).collect();
+            (!v.is_empty()).then(|| v.iter().sum::<f64>())
+        };
         let gpu_indices: Vec<u32> = sample.gpus.iter().map(|g| g.index).collect();
         history.push(sample);
         // #54, 2026-09-21: what the bench's idle gate asks - has REAL traffic generated tokens
@@ -805,11 +1064,22 @@ fn run(mut cfg: Config, home: &str) {
         // always look "busy") - its own known token count is subtracted out, with the same
         // margin the probe's own counter check allows for scrape-timing jitter.
         let idle_from = now - cfg.bench.idle_secs;
-        let raw_growth = history.counter_window(now, cfg.bench.idle_secs, |m| m.generation_tokens_total);
-        let probe_tokens: f64 = dbl.probes_between(idle_from, now + 1).unwrap_or_default().iter().filter_map(|p| p.tokens).map(f64::from).sum();
-        let recent_tokens_generated = lss_core::bench::real_tokens_generated(raw_growth, probe_tokens);
+        let raw_growth =
+            history.counter_window(now, cfg.bench.idle_secs, |m| m.generation_tokens_total);
+        let probe_tokens: f64 = dbl
+            .probes_between(idle_from, now + 1)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|p| p.tokens)
+            .map(f64::from)
+            .sum();
+        let recent_tokens_generated =
+            lss_core::bench::real_tokens_generated(raw_growth, probe_tokens);
 
-        let state = (serde_json::to_string(&engine).unwrap_or_default(), serde_json::to_string(&tracker).unwrap_or_default());
+        let state = (
+            serde_json::to_string(&engine).unwrap_or_default(),
+            serde_json::to_string(&tracker).unwrap_or_default(),
+        );
         if state != saved_state {
             let _ = dbl.kv_set("engine", &state.0);
             let _ = dbl.kv_set("tracker", &state.1);
@@ -818,42 +1088,90 @@ fn run(mut cfg: Config, home: &str) {
         if now - last_prune >= 3600 {
             last_prune = now;
             match dbl.prune(now, keep) {
-                Ok(n) if n > 0 => eprintln!("retention: pruned {n} rows; database {:.1} MB", dbl.size_bytes().unwrap_or(0) as f64 / 1e6),
+                Ok(n) if n > 0 => eprintln!(
+                    "retention: pruned {n} rows; database {:.1} MB",
+                    dbl.size_bytes().unwrap_or(0) as f64 / 1e6
+                ),
                 Ok(_) => {}
                 Err(e) => eprintln!("retention: {e}"),
             }
         }
 
         let all_incidents = dbl.incidents_since(now - keep.m10).unwrap_or_default();
-        let incidents: Vec<_> = all_incidents.iter().filter(|i| i.start >= now - 7 * 86_400 || i.end.is_none_or(|e| e >= now - 7 * 86_400)).cloned().collect();
+        let incidents: Vec<_> = all_incidents
+            .iter()
+            .filter(|i| i.start >= now - 7 * 86_400 || i.end.is_none_or(|e| e >= now - 7 * 86_400))
+            .cloned()
+            .collect();
         let all_alerts = dbl.recent_alerts(100).unwrap_or_default();
         let alerts: Vec<_> = all_alerts.iter().take(20).cloned().collect();
         let probes = dbl.recent_probes(50).unwrap_or_default();
-        let restarts_today = dbl.count_restarts_since(local_midnight(now), &cfg.gate_container).unwrap_or(0);
+        let restarts_today = dbl
+            .count_restarts_since(local_midnight(now), &cfg.gate_container)
+            .unwrap_or(0);
         let ts_names = tailscale.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let probe_user = query::probe_user_of(&cfg.gate_url);
-        let own_traffic = lss_core::users::OwnTraffic { probe_user: probe_user.as_deref(), probes_1h: own_probes.1, probes_24h: own_probes.2 };
-        let users_now = lss_core::users::build_users(history.iter().last().and_then(|s| s.gate.as_ref()), &cfg.user_alias, &ts_names, &own_traffic, now);
+        let own_traffic = lss_core::users::OwnTraffic {
+            probe_user: probe_user.as_deref(),
+            probes_1h: own_probes.1,
+            probes_24h: own_probes.2,
+        };
+        let users_now = lss_core::users::build_users(
+            history.iter().last().and_then(|s| s.gate.as_ref()),
+            &cfg.user_alias,
+            &ts_names,
+            &own_traffic,
+            now,
+        );
         // card #23: does the CURRENT engine publish token counters at all? (ServeMetrics has
         // no "tokens" key of its own - the token LEDGER is built from the collector's rollups,
         // which are zero for engines like Ollama that publish no generation_tokens_total.)
-        let tokens_not_reported = history.iter().last()
+        let tokens_not_reported = history
+            .iter()
+            .last()
             .and_then(|s| s.metrics.as_ref())
             .is_none_or(|m| m.generation_tokens_total <= 0.0);
         let tokens_json = (now - tokens_at >= 60).then(|| {
             tokens_at = now;
-            serde_json::to_string(&query::tokens_doc(&dbl, now, local_midnight(now), first_seen, &all_time, &users_now, query::TokensDocFlags { gate_absent: !cfg.has_gate(), tokens_not_reported })).unwrap_or_else(|_| "{}".into())
+            serde_json::to_string(&query::tokens_doc(
+                &dbl,
+                now,
+                local_midnight(now),
+                first_seen,
+                &all_time,
+                &users_now,
+                query::TokensDocFlags {
+                    gate_absent: !cfg.has_gate(),
+                    tokens_not_reported,
+                },
+            ))
+            .unwrap_or_else(|_| "{}".into())
         });
         let advice_json = (now - advice_at >= 300).then(|| {
             advice_at = now;
-            let doc = advice_run::compute(&dbl, now, &cfg, slots, first_seen, loadouts.current_card().as_ref(), &gpu_indices);
+            let doc = advice_run::compute(
+                &dbl,
+                now,
+                &cfg,
+                slots,
+                first_seen,
+                loadouts.current_card().as_ref(),
+                &gpu_indices,
+            );
             advice_top = doc.top.clone();
-            targets_now = doc.windows.iter().find(|w| w.stats.name == "24h").and_then(|w| w.stats.targets.clone()).unwrap_or_default();
+            targets_now = doc
+                .windows
+                .iter()
+                .find(|w| w.stats.name == "24h")
+                .and_then(|w| w.stats.targets.clone())
+                .unwrap_or_default();
             serde_json::to_string(&doc).unwrap_or_else(|_| "{}".into())
         });
         if now - user_log_at >= 60 {
             user_log_at = now;
-            user_log_24h = dbl.gatelog_merged(now - 86_400, now + 1).unwrap_or_default();
+            user_log_24h = dbl
+                .gatelog_merged(now - 86_400, now + 1)
+                .unwrap_or_default();
             if let Some((_, open)) = pipeline.gate_open_bucket() {
                 user_log_24h.merge(open);
             }
@@ -864,17 +1182,33 @@ fn run(mut cfg: Config, home: &str) {
         // Computed here, still inside the `dbl` lock it needs to read stored samples.
         let cost = rates_table.as_ref().map(|table| {
             let midnight = local_midnight(now);
-            let today_generated = history.counter_window(now, now - midnight, |m| m.generation_tokens_total);
-            let today_prompt = history.counter_window(now, now - midnight, |m| m.prompt_tokens_total);
+            let today_generated =
+                history.counter_window(now, now - midnight, |m| m.generation_tokens_total);
+            let today_prompt =
+                history.counter_window(now, now - midnight, |m| m.prompt_tokens_total);
             // #174: uncached prefill = prompt minus cached, so the real-work basis prices only
             // what the engine actually computed, never a cache hit's near-zero real cost.
-            let today_cached = history.counter_window(now, now - midnight, |m| m.cached_tokens_total);
-            cost_run::compute(&dbl, table, now, midnight, power_w, cost_run::TodayTokens { generated: today_generated, prompt: today_prompt, cached: today_cached })
+            let today_cached =
+                history.counter_window(now, now - midnight, |m| m.cached_tokens_total);
+            cost_run::compute(
+                &dbl,
+                table,
+                now,
+                midnight,
+                power_w,
+                cost_run::TodayTokens {
+                    generated: today_generated,
+                    prompt: today_prompt,
+                    cached: today_cached,
+                },
+            )
         });
         // card #176: the spend-over-time block, from the 10-minute rollup (item 4: never
         // re-derive a month from 5-second samples). Same rate table, same pricing function as
         // the "today" figure above, so the two can never disagree about a day they share.
-        let spending = rates_table.as_ref().map(|table| cost_run::spending(&dbl, table, now));
+        let spending = rates_table
+            .as_ref()
+            .map(|table| cost_run::spending(&dbl, table, now));
         // #73, 2026-09-22: TOKENS section's hour/day/week/month windows, all from the collector's
         // own rollup tables (#100, 2026-09-22: `hour` used to come from `work_1h`'s raw samples,
         // a different source than day/week/month - that let it read higher than `day` on a
@@ -888,7 +1222,11 @@ fn run(mut cfg: Config, home: &str) {
         let baseline_source = match (cfg.rules.c1_baseline_tok_s, baseline) {
             (Some(_), _) => "config".to_string(),
             (None, Some(_)) => "learned".to_string(),
-            (None, None) => format!("learning {}/{}", engine.c1_baseline_progress(), cfg.rules.c1_baseline_probes),
+            (None, None) => format!(
+                "learning {}/{}",
+                engine.c1_baseline_progress(),
+                cfg.rules.c1_baseline_probes
+            ),
         };
         // card #79: ONE lock, hoisted OUT of the build_status(...) expression. `std::sync::Mutex`
         // is NOT reentrant, and a MutexGuard temporary created inside a call expression lives
@@ -907,61 +1245,73 @@ fn run(mut cfg: Config, home: &str) {
         // right after it - never a temporary living through an argument list (no argument below
         // may take `db` or `shared`; the lock order stays shared -> db, #109).
         let status_db = db.lock().unwrap_or_else(|e| e.into_inner());
-        let mut status = query::assemble_status(&status_db, &StatusInputs {
-            now,
-            host: &cfg.host,
-            collector_version: env!("CARGO_PKG_VERSION"),
-            collector_started_at: started_at,
-            poll_secs: cfg.poll_secs,
-            slots,
-            history: &history,
-            incidents: &incidents,
-            alerts: &alerts,
-            probes: &probes,
-            last_valid_probe: last_valid_probe.as_ref(),
-            firing: engine.firing(now),
-            serve_down_since: tracker.serve_down_since(),
-            gate_down_since: tracker.gate_down_since(),
-            restarts_today,
-            thermal_exclude: &cfg.rules.thermal_exclude,
-            probe_enabled: cfg.probe.enabled,
-            probe_interval_s: cfg.probe.interval_secs,
-            c1_baseline: baseline,
-            c1_baseline_source: baseline_source,
-            thresholds: Thresholds::new(&cfg.rules, baseline, cfg.probe.interval_secs),
-            probes_admitted_since_gate_start: probe_share.map_or(0, |(_, n)| n),
-            latency: Some(pipeline.latency_now()),
-            gpu_health: &gpu_health,
-            user_aliases: &cfg.user_alias,
-            tailscale: &ts_names,
-            own_traffic,
-            advice_top: advice_top.clone(),
-            bench: bench_brief,
-            maintenance: maintenance_now,
-            loadout: loadouts.brief(),
-            prefill_typical: loadouts.prefill_typical(),
-            live_decode: loadouts.live_speed(history.latest().and_then(|s| s.metrics.as_ref()).map_or(0.0, |m| m.running)),
-            public_priority: cfg.public_priority.clone(),
-            trusted_priority: cfg.trusted_priority.clone(),
-            targets: targets_now.clone(),
-            user_log_24h: Some(&user_log_24h),
-            cost,
-            spending,
-            tokens_hour: tokens_windows.hour,
-            tokens_day: tokens_windows.day,
-            tokens_week: tokens_windows.week,
-            tokens_month: tokens_windows.month,
-            tokens_hour_covered_secs: tokens_windows.hour_covered_secs,
-            tokens_day_covered_secs: tokens_windows.day_covered_secs,
-            tokens_week_covered_secs: tokens_windows.week_covered_secs,
-            tokens_month_covered_secs: tokens_windows.month_covered_secs,
-            watch,
-        }, rates_table.as_ref());
+        let mut status = query::assemble_status(
+            &status_db,
+            &StatusInputs {
+                now,
+                host: &cfg.host,
+                collector_version: env!("CARGO_PKG_VERSION"),
+                collector_started_at: started_at,
+                poll_secs: cfg.poll_secs,
+                slots,
+                history: &history,
+                incidents: &incidents,
+                alerts: &alerts,
+                probes: &probes,
+                last_valid_probe: last_valid_probe.as_ref(),
+                firing: engine.firing(now),
+                serve_down_since: tracker.serve_down_since(),
+                gate_down_since: tracker.gate_down_since(),
+                restarts_today,
+                thermal_exclude: &cfg.rules.thermal_exclude,
+                probe_enabled: cfg.probe.enabled,
+                probe_interval_s: cfg.probe.interval_secs,
+                c1_baseline: baseline,
+                c1_baseline_source: baseline_source,
+                thresholds: Thresholds::new(&cfg.rules, baseline, cfg.probe.interval_secs),
+                probes_admitted_since_gate_start: probe_share.map_or(0, |(_, n)| n),
+                latency: Some(pipeline.latency_now()),
+                gpu_health: &gpu_health,
+                user_aliases: &cfg.user_alias,
+                tailscale: &ts_names,
+                own_traffic,
+                advice_top: advice_top.clone(),
+                bench: bench_brief,
+                maintenance: maintenance_now,
+                loadout: loadouts.brief(),
+                prefill_typical: loadouts.prefill_typical(),
+                live_decode: loadouts.live_speed(
+                    history
+                        .latest()
+                        .and_then(|s| s.metrics.as_ref())
+                        .map_or(0.0, |m| m.running),
+                ),
+                public_priority: cfg.public_priority.clone(),
+                trusted_priority: cfg.trusted_priority.clone(),
+                targets: targets_now.clone(),
+                user_log_24h: Some(&user_log_24h),
+                cost,
+                spending,
+                tokens_hour: tokens_windows.hour,
+                tokens_day: tokens_windows.day,
+                tokens_week: tokens_windows.week,
+                tokens_month: tokens_windows.month,
+                tokens_hour_covered_secs: tokens_windows.hour_covered_secs,
+                tokens_day_covered_secs: tokens_windows.day_covered_secs,
+                tokens_week_covered_secs: tokens_windows.week_covered_secs,
+                tokens_month_covered_secs: tokens_windows.month_covered_secs,
+                watch,
+            },
+            rates_table.as_ref(),
+        );
         drop(status_db);
         // card #331: an engine that refuses our key says so, in words, on /status (and so in
         // `lss status` and the bench's refusal) - not just DOWN
         if !status.serve.up {
-            status.serve.down_reason = lss_core::engine::auth_refusal_hint(&r.serve_detail, !cfg.engine_api_key.trim().is_empty());
+            status.serve.down_reason = lss_core::engine::auth_refusal_hint(
+                &r.serve_detail,
+                !cfg.engine_api_key.trim().is_empty(),
+            );
         }
         let rules = lss_core::series::RulesDoc {
             v: lss_core::STATUS_SCHEMA_VERSION,
@@ -980,14 +1330,21 @@ fn run(mut cfg: Config, home: &str) {
             s.c1_baseline = status.c1_baseline();
             s.rules_json = serde_json::to_string(&rules).unwrap_or_else(|_| "{}".into());
             s.gate_open = pipeline.gate_open_bucket().cloned();
-            s.loadouts_json = serde_json::to_string(&loadouts.doc(now)).unwrap_or_else(|_| "{}".into());
+            s.loadouts_json =
+                serde_json::to_string(&loadouts.doc(now)).unwrap_or_else(|_| "{}".into());
             if let Some(t) = tokens_json {
                 s.tokens_json = t;
             }
             if let Some(a) = advice_json {
                 s.advice_json = a;
             }
-            s.bench_json = serde_json::to_string(&lss_core::bench::BenchDoc { v: lss_core::STATUS_SCHEMA_VERSION, generated_at: now, brief: s.bench.brief.clone(), runs: bench_runs }).unwrap_or_else(|_| "{}".into());
+            s.bench_json = serde_json::to_string(&lss_core::bench::BenchDoc {
+                v: lss_core::STATUS_SCHEMA_VERSION,
+                generated_at: now,
+                brief: s.bench.brief.clone(),
+                runs: bench_runs,
+            })
+            .unwrap_or_else(|_| "{}".into());
             s.recent_tokens_generated = recent_tokens_generated;
             s.other_users_inflight = status.users.totals.inflight;
             s.power_w = power_w;
@@ -1020,18 +1377,39 @@ fn spawn_xid_backfill(db: Arc<Mutex<Db>>, from: i64, until: Option<i64>, startup
             }
         };
         let mut scratch = IncidentTracker::default();
-        let input = IncidentInput { now: unix_now(), serve_up: true, serve_detail: "", gate_up: true, gate_detail: "", containers: &[], xids: &events };
+        let input = IncidentInput {
+            now: unix_now(),
+            serve_up: true,
+            serve_detail: "",
+            gate_up: true,
+            gate_detail: "",
+            containers: &[],
+            xids: &events,
+        };
         let db = db.lock().unwrap_or_else(|e| e.into_inner());
         let mut booked = 0;
         for op in scratch.step(&input) {
-            if let IncidentOp::Event { kind, ts, detail, key, .. } = op {
-                booked += usize::from(db.event_incident(kind, ts, &detail, key.as_deref()).unwrap_or(false));
+            if let IncidentOp::Event {
+                kind,
+                ts,
+                detail,
+                key,
+                ..
+            } = op
+            {
+                booked += usize::from(
+                    db.event_incident(kind, ts, &detail, key.as_deref())
+                        .unwrap_or(false),
+                );
             }
         }
         if startup {
             let _ = db.kv_del(KV_XID_BACKFILL_FROM);
         }
-        eprintln!("xid backfill: {} report(s) since {from}, {booked} new incident(s)", events.len());
+        eprintln!(
+            "xid backfill: {} report(s) since {from}, {booked} new incident(s)",
+            events.len()
+        );
     });
 }
 
@@ -1039,14 +1417,23 @@ fn spawn_xid_backfill(db: Arc<Mutex<Db>>, from: i64, until: Option<i64>, startup
 fn spool_depth(state_dir: &std::path::Path) -> Option<u64> {
     let dir = state_dir.join("mail-spool");
     match std::fs::read_dir(&dir) {
-        Ok(entries) => Some(entries.filter_map(Result::ok).filter(|e| e.file_type().is_ok_and(|t| t.is_file())).count() as u64),
+        Ok(entries) => Some(
+            entries
+                .filter_map(Result::ok)
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .count() as u64,
+        ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(0),
         Err(_) => None,
     }
 }
 
 fn load_state<T: serde::de::DeserializeOwned + Default>(db: &Db, key: &str) -> T {
-    db.kv_get(key).ok().flatten().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default()
+    db.kv_get(key)
+        .ok()
+        .flatten()
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default()
 }
 
 /// card #264: one statvfs reading of `path` ("" = not watched, None = unreadable). What the disk
@@ -1065,7 +1452,11 @@ fn disk_reading(path: &str) -> Option<lss_core::rules::DiskObs> {
         return None;
     }
     let frag = st.f_frsize as u64;
-    Some(lss_core::rules::DiskObs { path: path.to_string(), total_bytes: st.f_blocks as u64 * frag, avail_bytes: st.f_bavail as u64 * frag })
+    Some(lss_core::rules::DiskObs {
+        path: path.to_string(),
+        total_bytes: st.f_blocks as u64 * frag,
+        avail_bytes: st.f_bavail as u64 * frag,
+    })
 }
 
 #[cfg(test)]
@@ -1077,6 +1468,10 @@ mod disk_tests {
         assert!(d.total_bytes > 0 && d.avail_bytes <= d.total_bytes, "{d:?}");
         assert!((0.0..=100.0).contains(&d.used_pct()), "{d:?}");
         assert_eq!(super::disk_reading(""), None, "an empty path = not watched");
-        assert_eq!(super::disk_reading("/no/such/path/264"), None, "unreadable = no reading (never a recovery)");
+        assert_eq!(
+            super::disk_reading("/no/such/path/264"),
+            None,
+            "unreadable = no reading (never a recovery)"
+        );
     }
 }

@@ -7,43 +7,69 @@
 //! covers an unchanged identity), a failed fetch must not keep the good value as truth (the M2
 //! mutation must die), and a configured `slots` is never second-guessed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// One fake SGLang. `slots` is an atomic so a test can change what the engine says
 /// (a restarted serve, bigger `--max-running-requests`) without restarting the HTTP thread;
 /// `broken` makes /get_server_info fail, like an engine still booting; `info_hits` counts every
 /// /get_server_info answer, so a test can prove the collector ASKED (or never asked) - no
-/// assertion rides on a number the fake merely mirrored. `model` and `start_ts` stand in for
-/// the served model id and the serve container's start time: the gate's other two identity
-/// keys. `v1models_hits` counts /v1/models (the scrape asks it every poll).
+/// assertion rides on a number the fake merely mirrored. `model` stands in for the served
+/// model id: the gate's other identity key (the container start time comes from the fake
+/// `docker` on PATH, not from the engine, card #443). `v1models_hits` counts /v1/models
+/// (the scrape asks it every poll).
 struct SlotsEngine {
     port: u16,
     handle: Option<std::thread::JoinHandle<()>>,
     slots: std::sync::Arc<AtomicU32>,
     broken: std::sync::Arc<AtomicU32>,
     info_hits: std::sync::Arc<AtomicU32>,
-    model: std::sync::Arc<std::sync::Mutex<String>>,
-    start_ts: std::sync::Arc<AtomicU32>,
-    v1models_hits: std::sync::Arc<AtomicU32>,
+    model: Arc<AtomicU32>,
+    v1models_hits: Arc<AtomicU32>,
+    /// EVERY request the engine answered (any URL, /stop excluded) - the "no extra HTTP" proof
+    total_hits: Arc<AtomicU32>,
+    /// card #443 r4: every path the engine answered, in order - the no-extra-HTTP test prints
+    /// it in its assertion message so the extra per-poll request is NAMED, not just counted.
+    paths: Arc<parking_lot::Mutex<Vec<String>>>,
 }
 
 impl SlotsEngine {
+    /// Blocks until /v1/models has been answered `n` more times than `at` (None = now). Each
+    /// /v1/models answer is one poll's scrape, so the return value IS a poll count: a test
+    /// reads the counter at a poll boundary, not somewhere inside one. The whole box is the
+    /// status_when deadline (40 s) - a collector that stopped scraping fails here, loudly.
+    fn wait_v1models(&self, n: u32, at: Option<u32>) -> u32 {
+        let start = at.unwrap_or_else(|| self.v1models_hits.load(Ordering::Relaxed));
+        let deadline = Instant::now() + Duration::from_secs(40);
+        loop {
+            let now = self.v1models_hits.load(Ordering::Relaxed);
+            if now >= start + n {
+                return now;
+            }
+            assert!(Instant::now() < deadline, "the collector stopped scraping: /v1/models hits {start} -> {now} (wanted +{n})");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn start(slots: u32) -> SlotsEngine {
         SlotsEngine::with(("fake-model-414".into(), slots, 1_700_000_000))
     }
-    /// `model`: the served id /v1/models publishes; `slots`: max_running_requests;
-    /// `start_ts`: the container start time the collector's docker inspect would see.
-    fn with((model, slots, start_ts): (String, u32, u32)) -> SlotsEngine {
-        let slots = std::sync::Arc::new(AtomicU32::new(slots));
-        let broken = std::sync::Arc::new(AtomicU32::new(0));
-        let info_hits = std::sync::Arc::new(AtomicU32::new(0));
-        let model = std::sync::Arc::new(std::sync::Mutex::new(model));
-        let start_ts = std::sync::Arc::new(AtomicU32::new(start_ts));
-        let v1models_hits = std::sync::Arc::new(AtomicU32::new(0));
-        let (slots2, broken2, hits2, model2, ts2, vm2) = (slots.clone(), broken.clone(), info_hits.clone(), model.clone(), start_ts.clone(), v1models_hits.clone());
+    /// `model`: the served id /v1/models publishes; `slots`: max_running_requests. The tuple's
+    /// third slot is vestigial (the old HTTP start-time route, deleted in card #443 - the
+    /// start time is docker's now, via the fake `docker` on PATH).
+    fn with((_model, slots, _start_ts): (String, u32, u32)) -> SlotsEngine {
+        let slots = Arc::new(AtomicU32::new(slots));
+        let broken = Arc::new(AtomicU32::new(0));
+        let info_hits = Arc::new(AtomicU32::new(0));
+        let model = Arc::new(AtomicU32::new(0));
+        let v1models_hits = Arc::new(AtomicU32::new(0));
+        let total_hits = Arc::new(AtomicU32::new(0));
+        let (slots2, broken2, hits2, model2, vm2, total2) = (slots.clone(), broken.clone(), info_hits.clone(), model.clone(), v1models_hits.clone(), total_hits.clone());
+        let paths = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let paths2 = paths.clone();
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
         let handle = std::thread::spawn(move || {
@@ -52,21 +78,34 @@ impl SlotsEngine {
                     let _ = req.respond(tiny_http::Response::from_string("bye"));
                     return;
                 }
+                // card #443 r4: remember every path the collector asked, so the no-extra-HTTP
+                // assertion can NAME the extra one instead of only counting it
+                paths2.lock().push(req.url().to_string());
                 let (code, body) = match req.url() {
+                    u if u.starts_with("/docker/") && u.ends_with("/started_at") => {
+                        // card #443: this route MUST NEVER be asked again - count it as an
+                        // unexplained request so the no-extra-HTTP test fails loudly on it
+                        total2.fetch_add(1, Ordering::Relaxed);
+                        (404, "route deleted (card #443)".to_string())
+                    }
                     "/v1/models" => {
                         vm2.fetch_add(1, Ordering::Relaxed);
-                        let id = model2.lock().unwrap().clone();
+                        total2.fetch_add(1, Ordering::Relaxed);
+                        let id = match model2.load(Ordering::Relaxed) {
+                            0 => "fake-model-414".to_string(),
+                            1 => "fake-model-414-restarted".to_string(),
+                            _ => "fake-model-414".to_string(),
+                        };
                         (200, format!("{{\"data\":[{{\"id\":\"{id}\"}}]}}"))
                     }
-                    // any `/docker/<name>/started_at`: the collector asks by the container NAME
-                    // it knows ("" for a plain process) - the start time is per-engine, not per-name
-                    u if u.starts_with("/docker/") && u.ends_with("/started_at") => {
-                        (200, ts2.load(Ordering::Relaxed).to_string())
+                    "/metrics" => {
+                        total2.fetch_add(1, Ordering::Relaxed);
+                        (200, "sglang:num_running_reqs{} 0\nsglang:num_queue_reqs{} 0\n".to_string())
                     }
-                    "/metrics" => (200, "sglang:num_running_reqs{} 0\nsglang:num_queue_reqs{} 0\n".to_string()),
                     "/get_server_info" => match broken2.load(Ordering::Relaxed) {
                         0 => {
                             hits2.fetch_add(1, Ordering::Relaxed);
+                            total2.fetch_add(1, Ordering::Relaxed);
                             (200, format!("{{\"version\":\"414.0\",\"max_running_requests\":{}}}", slots2.load(Ordering::Relaxed)))
                         }
                         n => (n, "no".to_string()),
@@ -76,7 +115,7 @@ impl SlotsEngine {
                 let _ = req.respond(tiny_http::Response::from_string(body).with_status_code(code));
             }
         });
-        SlotsEngine { port, handle: Some(handle), slots, broken, info_hits, model, start_ts, v1models_hits }
+        SlotsEngine { port, handle: Some(handle), slots, broken, info_hits, model, v1models_hits, total_hits, paths }
     }
     fn url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
@@ -105,13 +144,29 @@ impl Collector {
         Self::named(name, engine, recheck_secs, "")
     }
     /// `slots_cfg`: a literal `slots = N` line in the collector's config (the operator's word).
+    /// `docker_started`: when set, a fake `docker` executable goes on the collector's PATH and
+    /// answers `docker inspect --format <INSPECT_FORMAT>` exactly as docker would, reporting a
+    /// container named `serve` in state `running` with that unix start time (card #443: the
+    /// REAL decision code must read the start time through the REAL docker-inspect path).
     fn named(name: &str, engine: &str, recheck_secs: Option<i64>, slots_cfg: &str) -> Collector {
+        Self::with_docker(name, engine, recheck_secs, slots_cfg, None)
+    }
+    fn with_docker(name: &str, engine: &str, recheck_secs: Option<i64>, slots_cfg: &str, docker_started: Option<i64>) -> Collector {
         let dir = std::env::temp_dir().join(format!("lss-414-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        if let Some(started) = docker_started {
+            write_docker_shim(&dir, started);
+        }
+        // a pinned serve container name with docker on PATH: the collector asks the REAL
+        // `docker inspect` for it every poll; WITHOUT the shim (docker absent) the same pinned
+        // name is the card's case - inspect finds nothing and the collector must NOT ask the
+        // engine over HTTP for the start time. `serve_container = ""` reads as "auto" in the
+        // config parser, so the plain-process tests pin the empty string explicitly here.
+        let serve_ct_cfg = if docker_started.is_some() { "serve_container = \"serve\"\n" } else { "serve_container = \"\"\n" };
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let cfg = format!(
-            "listen = [\"127.0.0.1:{port}\"]\ndb_path = \"{d}/lss.db\"\npoll_secs = 1\nserve_container = \"\"\nalert_cmd = \"/bin/true\"\n{slots_cfg}\n\n[probe]\nenabled = false\n\n[[engine]]\nkind = \"sglang\"\nurl = \"{engine}\"",
+            "listen = [\"127.0.0.1:{port}\"]\ndb_path = \"{d}/lss.db\"\npoll_secs = 1\n{serve_ct_cfg}alert_cmd = \"/bin/true\"\n{slots_cfg}\n\n[probe]\nenabled = false\n\n[[engine]]\nkind = \"sglang\"\nurl = \"{engine}\"",
             d = dir.display(),
             slots_cfg = if slots_cfg.is_empty() { String::new() } else { format!("{slots_cfg}\n") }
         );
@@ -119,6 +174,12 @@ impl Collector {
         let log = std::fs::File::create(dir.join("collector.log")).unwrap();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_lss-collector"));
         cmd.arg("--config").arg(dir.join("collector.toml")).env("HOME", &dir);
+        if docker_started.is_some() {
+            // the fake `docker` must be the FIRST name on PATH the collector finds
+            let mut path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>();
+            path.insert(0, dir.join("bin"));
+            cmd.env("PATH", std::env::join_paths(&path).unwrap());
+        }
         if let Some(secs) = recheck_secs {
             cmd.env("LSS_SLOTS_RECHECK_SECS", secs.to_string());
         } else {
@@ -159,6 +220,28 @@ impl Drop for Collector {
     }
 }
 
+/// A fake `docker` executable: `inspect --format <INSPECT_FORMAT> <name>` prints one line -
+/// container `serve`, running, 0 restarts, the given unix start time in RFC3339 exactly as
+/// docker prints it - and anything else exits 1 like docker without such a container. The
+/// collector reads the start time through the REAL docker-inspect path (card #443).
+fn write_docker_shim(dir: &Path, started: i64) {
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let rfc = chrono::DateTime::from_timestamp(started, 0).unwrap().to_rfc3339();
+    std::fs::write(
+        bin.join("docker"),
+        format!(
+            "#!/bin/sh\ncase \"$1 $3\" in\n  \"inspect {{{{.Name}}}}|{{{{.State.Status}}}}|{{{{.RestartCount}}}}|{{{{.State.StartedAt}}}}\")\n    printf 'serve|running|0|%s\\n' \"{rfc}\" ;;\n  *) exit 1 ;;\nesac\n"
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(bin.join("docker"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 /// Repro 2026-09-25: a serve restarted with --max-running-requests 3 -> 8 kept saying 3/3.
 /// The fake restarts the way a real one does: a new SERVED MODEL ID (the identity a loadout is
 /// keyed on) beside new max_running_requests, no down->up edge - and /status must follow within
@@ -174,7 +257,7 @@ fn slots_refetched_when_engine_identity_changes() {
     assert_eq!(s["serve"]["slots"], 3);
     let hits_after_first = e.info_hits.load(Ordering::Relaxed);
     let vm_after_first = e.v1models_hits.load(Ordering::Relaxed);
-    *e.model.lock().unwrap() = "fake-model-414-restarted".into();
+    e.model.store(1, Ordering::Relaxed);
     e.slots.store(8, Ordering::Relaxed);
     let s = c.status_when(|s| s["serve"]["slots"] == 8, "restart: new served id, max_running_requests 3 -> 8");
     assert_eq!(s["serve"]["slots"], 8);
@@ -184,11 +267,11 @@ fn slots_refetched_when_engine_identity_changes() {
 }
 
 /// rv-lead-lss 20:46: the container START TIME is a gate key of its own. The fake moves ONLY
-/// the start time (same served id throughout, /v1/models hit-counted to prove it) - the same
-/// restart shape the periodic test covers for a max_running_requests-only change - and the
-/// new slots must land within one poll, via the REAL decision code (no hand copy, no docker:
-/// the collector's docker inspect finds nothing, and the start time arrives over the fake's
-/// own HTTP like the card's other signals).
+/// the start time (same served id throughout) - the same restart shape the periodic test
+/// covers for a max_running_requests-only change - and the new slots must land within one
+/// poll, via the REAL decision code: the start time arrives through the REAL docker-inspect
+/// path (a fake `docker` on PATH reporting container `serve` running, card #443 - no HTTP
+/// stand-in, no hand copy).
 #[test]
 fn slots_refetched_when_serve_container_start_time_changes() {
     let e = SlotsEngine::with(("fake-model-414".into(), 3, 1_700_000_000));
@@ -196,8 +279,8 @@ fn slots_refetched_when_serve_container_start_time_changes() {
     // age) so the START TIME is the only key that can ask: a settled value is not re-read
     // until the container's start time moves, then the REAL gate's serve_ct branch re-fetches
     // and takes 8. (The boot fetch itself is the gate's "never fetched yet" ask - hit-counted
-    // below, a mirrored value would not notice.)
-    let c = Collector::start("serve-ct", &e.url(), Some(9_999_999));
+    // below, a mirrored value would not notice.) The docker shim reports the boot start time.
+    let c = Collector::with_docker("serve-ct", &e.url(), Some(9_999_999), "", Some(1_700_000_000));
     let s = c.status_when(|s| s["serve"]["slots"] == 3, "first boot, slots 3");
     assert_eq!(s["serve"]["slots"], 3);
     let model_at_boot = s["serve"]["model"].clone();
@@ -207,7 +290,10 @@ fn slots_refetched_when_serve_container_start_time_changes() {
     let hits_settled = e.info_hits.load(Ordering::Relaxed);
     std::thread::sleep(Duration::from_millis(2200));
     assert_eq!(e.info_hits.load(Ordering::Relaxed), hits_settled, "a settled value is not re-asked while the start time stands still");
-    e.start_ts.store(1_700_000_100, Ordering::Relaxed);
+    // the restart, the way docker sees it: SAME name, NEW start time (the shim is rewritten
+    // on disk; the collector forks it fresh every poll, so the next inspect sees it). The
+    // served id is untouched here - the start time is the only key that moves.
+    write_docker_shim(&c.dir, 1_700_000_100);
     e.slots.store(8, Ordering::Relaxed);
     let s = c.status_when(|s| s["serve"]["slots"] == 8, "restart: container start time moved, model unchanged");
     assert_eq!(s["serve"]["slots"], 8);
@@ -265,6 +351,56 @@ fn slots_refreshed_periodically() {
     // the identity never changed here: only the periodic re-read can discover 8
     let s = c.status_when(|s| s["serve"]["slots"] == 8, "periodic refresh");
     assert_eq!(s["serve"]["slots"], 8);
+}
+
+/// card #443: with `serve_container` set and docker having NO answer (no `docker` executable at
+/// all), the collector must not add an HTTP GET per poll - the old code asked
+/// `http://<engine>/docker/<name>/started_at` every poll whenever docker inspect returned
+/// nothing, a 404 every 5 s against a real SGLang. The fake engine counts EVERY request it
+/// sees and RECORDS the path of each (r4: the extra request is named, not just counted). The
+/// baseline set of paths a settled sglang poll legitimately asks is {/v1/models, /metrics} -
+/// the same two scrapes at 3f21a9c (Sglang::scrape asks both; the pre-#414 behaviour). The
+/// window is measured IN POLLS - between two /v1/models scrapes the engine must see nothing
+/// beyond each poll's own two scrapes (r2/r3: a wall-clock settle cannot say "per poll", it
+/// races the collector's own loop; the /get_server_info asks are counted separately - the
+/// slots gate's own, already covered).
+#[test]
+fn no_extra_http_per_poll_when_docker_has_no_answer() {
+    let e = SlotsEngine::start(3);
+    let c = Collector::start("no-extra-http", &e.url(), Some(9_999_999));
+    let s = c.status_when(|s| s["serve"]["slots"] == 3, "first boot, slots 3");
+    assert_eq!(s["serve"]["slots"], 3);
+    // settled: at least 3 further polls with nothing to re-read, OBSERVED (card #443 r3: a wall
+    // clock sleep races the collector's own poll loop - /status is only rebuilt at the END of
+    // each poll, so the boot wait can return inside the FIRST poll and a bare sleep starts its
+    // window before any new scrape; a settle that sees no polls proves nothing. Each /v1/models
+    // answer is exactly one poll's scrape, so settling on the COUNTER pins both window edges at
+    // poll boundaries: vm0 is the boot scrape's boundary, +3 is the wait.)
+    let vm0 = e.wait_v1models(1, None); // land exactly after the boot poll's scrape
+    let vm1 = e.wait_v1models(3, Some(vm0)); // three more polls, nothing to re-read in them
+    let (total_at_start, info_at_start) = (e.total_hits.load(Ordering::Relaxed), e.info_hits.load(Ordering::Relaxed));
+    // one more poll IN the window (r2's bug: vm1 itself can still sit just before poll N's
+    // scrape, so a window [vm1, vm1] could observe no poll at all)
+    let vm2 = e.wait_v1models(1, Some(vm1));
+    let vm3 = e.wait_v1models(1, Some(vm2)); // a second, so the window is bounded BY scrapes
+    // the window held >= 2 completed polls: poll A's /metrics+... all arrived before the first
+    // edge (vm2 counted), poll B's own scrape ended the window (vm3 counted)
+    assert!(vm3 - vm1 >= 2, "the window must hold at least two polls ({} - {})", vm3, vm1);
+    // EVERYTHING the collector asked the engine in that window is total2-total_at_start. A
+    // settled sglang poll scrapes /v1/models AND /metrics (the baseline set at 3f21a9c), so the
+    // bound is 2 asks per poll - the slots gate was quiet (recheck 9_999_999, identity
+    // unchanged, nothing failed), so NO /get_server_info may appear in the window at all, and
+    // NOTHING ELSE may appear either: the deleted /docker/<name>/started_at route, a detect,
+    // anything extra shows up here (and is NAMED by the paths list).
+    let (total2, info2) = (e.total_hits.load(Ordering::Relaxed), e.info_hits.load(Ordering::Relaxed));
+    let extra = (total2 - total_at_start) - 2 * (vm3 - vm1);
+    // r4: NAME the extra request - every path the engine answered since the window opened
+    // (the boot asks above are before total_at_start, so slice off the boot prefix by the
+    // count: the last (total2 - total_at_start) answers are the window's).
+    let paths = e.paths.lock();
+    let window_paths = paths[paths.len().saturating_sub((total2 - total_at_start) as usize)..].join(", ");
+    assert_eq!(extra, 0, "in {} polls the engine saw {} requests but only {} scrape-pairs (/v1/models + /metrics each) - extra per-poll HTTP exists; paths in the window: [{}]", vm3 - vm1, total2 - total_at_start, vm3 - vm1, window_paths);
+    assert_eq!(info2, info_at_start, "no /get_server_info re-asks either");
 }
 
 /// A configured `slots` is the operator's word: the collector never re-ASKS the engine for a

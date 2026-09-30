@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.3.0 (2026-09-29)
+
+Plug-and-play. #512, #513, #514, #515, #516.
+
+- **#512: the README opens with the Quickstart** — install fence + demo screenshot (lss-demo.svg)
+  right after the intro paragraph, so a new reader sees how to run it before anything else.
+- **#515: `lss setup` can point at a server on another machine.** The engine menu gains
+  `r = the server is on another machine`; a typed address is live-tested before anything is
+  written, and an unreachable one is refused in one plain line.
+- **#516: the cost wizard asks the COUNTRY first.** Outside the US you type your electricity
+  price per kWh from your bill (decimal commas and thousands separators understood), the currency
+  is inferred for 49 countries or asked once, and both land in `rates.toml`.
+- **#513: the gateway pages are hidden when there is no gateway.** A stock SGLang/vLLM/Ollama
+  install shows only the pages it has; the keys `4`/`7` and `lss users`/`lss gateway` print the
+  plain status.
+- **#514: the omp watcher is opt-in.** Nothing reads or parses an omp config unless the operator
+  sets `omp_config_path`; a box without omp is never watched.
+
 ## v1.2.2 (2026-09-26)
 
 Fixes and docs since v1.2.1. 143 commits, 136 card commits. Most work in this window was the

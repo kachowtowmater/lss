@@ -377,6 +377,11 @@ impl App {
     }
 
     pub fn open(&mut self, page: PageId) {
+        // card #513: a hidden page (no gateway: USERS/GATEWAY) is never opened, from any path -
+        // the keys, the ring, the classic grid's Enter and the HELP jump all funnel through here.
+        if !PageId::visible_pages(self.gate_absent()).contains(&page) {
+            return;
+        }
         if self.view != View::Page(page) {
             self.scroll = 0;
             self.compare_open = false;
@@ -385,32 +390,67 @@ impl App {
         self.view = View::Page(page);
     }
 
+    /// Whether the current server has no gateway at all - the page-visibility switch (`App`'s
+    /// only window on the snapshot; `None` = nothing fetched yet, nothing hidden either).
+    fn gate_absent(&self) -> bool {
+        self.status.as_ref().is_some_and(|s| s.gate.absent)
+    }
+
+    /// The pages the Tab ring walks, in key order - all ten, or eight without a gateway.
+    fn ring(&self) -> Vec<PageId> {
+        PageId::visible_pages(self.gate_absent())
+    }
+
     /// `0` / `esc`: back to the overview, from anywhere.
     fn back_to_overview(&mut self) {
         self.view = View::Overview;
         self.scroll = 0;
     }
 
-    /// Tab: step forward through the 11-stop ring - the overview, then all ten `PageId::ALL`
-    /// pages in order, wrapping at ADVICE back to the overview (card #231 correction, the owner
-    /// via the orchestrator: "page 0 has no tab thats why tab wasnt working ... So the Tab ring MUST
-    /// include the overview: 0 -> 1 -> … -> last -> 0"). `PageId::next()` alone cannot express
-    /// this: it only wraps within the 10 pages themselves, and the overview is not a `PageId`.
+    /// Tab: step forward through the ring - the overview, then the VISIBLE pages in key order
+    /// (`PageId::visible_pages`, card #513: with no gateway the two gateway pages are skipped,
+    /// never opened), wrapping at the last one back to the overview (card #231 correction, the
+    /// owner via the orchestrator: "page 0 has no tab thats why tab wasnt working ... So the Tab
+    /// ring MUST include the overview: 0 -> 1 -> … -> last -> 0"). `PageId::next()` alone cannot
+    /// express this: it only wraps within the 10 pages themselves, and the overview is not a
+    /// `PageId`.
     pub fn open_next_in_ring(&mut self) {
+        let ring = self.ring();
         match self.view {
-            View::Overview => self.open(PageId::ALL[0]),
-            View::Page(p) if p == *PageId::ALL.last().unwrap() => self.back_to_overview(),
-            View::Page(p) => self.open(p.next()),
+            View::Overview => {
+                if let Some(first) = ring.first() {
+                    self.open(*first);
+                }
+            }
+            View::Page(p) if ring.last() == Some(&p) => self.back_to_overview(),
+            View::Page(p) => {
+                if let Some(next) = ring.iter().copied().find(|q| q.number() > p.number()) {
+                    self.open(next);
+                } else {
+                    self.back_to_overview();
+                }
+            }
             _ => {}
         }
     }
 
     /// Shift-Tab: the same ring, reversed.
     pub fn open_prev_in_ring(&mut self) {
+        let ring = self.ring();
         match self.view {
-            View::Overview => self.open(PageId::ALL[PageId::ALL.len() - 1]),
-            View::Page(p) if p == PageId::ALL[0] => self.back_to_overview(),
-            View::Page(p) => self.open(PageId::ALL[(p.number() + PageId::ALL.len() - 2) % PageId::ALL.len()]),
+            View::Overview => {
+                if let Some(last) = ring.last() {
+                    self.open(*last);
+                }
+            }
+            View::Page(p) if ring.first() == Some(&p) => self.back_to_overview(),
+            View::Page(p) => {
+                if let Some(prev) = ring.iter().rev().copied().find(|q| q.number() < p.number()) {
+                    self.open(prev);
+                } else {
+                    self.back_to_overview();
+                }
+            }
             _ => {}
         }
     }
@@ -559,7 +599,9 @@ impl App {
             // #231 correction (the orchestrator, reading the owner: "page 0 has no tab thats why tab
             // wasnt working ... Keep 0 = overview"): `0` stays the overview's key, same as
             // `esc`. ADVICE - the tenth page, once 1-9 ran out of digits - gets the next free
-            // key, `a`, instead.
+            // key, `a`, instead. #513: a key naming a HIDDEN page (no gateway: 4 USERS, 7
+            // GATEWAY) does nothing - the numbering stays stable (docs and muscle memory), the
+            // reader just stays where they are; the overview already says why the page is gone.
             KeyCode::Char('0') => self.back_to_overview(),
             KeyCode::Char('a') | KeyCode::Char('A') => self.open(PageId::Advice),
             KeyCode::Char(c @ '1'..='9') => {
@@ -1067,9 +1109,27 @@ pub fn targets_line(s: &Status, width: u16) -> Option<Line<'static>> {
 ///   3. current - " gpus 3/10 " or " overview " - just enough to say where you are and how many
 ///      pages there are, however narrow the pane.
 ///
+/// #513: what the chrome's page widgets show - the VISIBLE pages of the server on screen
+/// (`App::gate_absent`; `None` status = nothing hidden, so the docs' ten stay offered).
+fn tab_pages(app: &App) -> Vec<PageId> {
+    match app.status.as_ref() {
+        Some(s) => PageId::visible_pages(s.gate.absent),
+        None => PageId::ALL.to_vec(),
+    }
+}
+
 /// `[bracketed]` marks the current page - `fleet_line`'s own convention for "the one you are on"
 /// (`[name]` there too), not colour, so it reads the same in every theme.
+/// #513: the strip offers only the VISIBLE pages (`PageId::visible_pages`) - with no gateway,
+/// USERS and GATEWAY are not offered at all; the numbers of the pages that remain are unchanged.
 pub fn tab_strip(view: View, width: u16) -> Line<'static> {
+    let pages = PageId::visible_pages(false);
+    tab_strip_pages(view, &pages, width)
+}
+
+/// The strip itself, over the caller's page list - `tab_strip` is the gateway-always-present
+/// wrapper; the chrome (`chrome_tabs`) passes what the current server actually shows.
+fn tab_strip_pages(view: View, pages: &[PageId], width: u16) -> Line<'static> {
     let current: Option<PageId> = match view {
         View::Page(p) => Some(p),
         _ => None,
@@ -1078,7 +1138,7 @@ pub fn tab_strip(view: View, width: u16) -> Line<'static> {
     let mark = |label: String, here: bool| if here { format!("[{label}]") } else { label };
 
     let names: Vec<Span<'static>> = std::iter::once(Span::styled(format!(" {} ", mark("0 overview".into(), current.is_none())), if current.is_none() { bold() } else { dim() }))
-        .chain(PageId::ALL.iter().map(|p| {
+        .chain(pages.iter().map(|p| {
             let here = current == Some(*p);
             Span::styled(format!(" {} ", mark(format!("{} {}", p.key_digit(), p.title().to_lowercase()), here)), if here { bold() } else { dim() })
         }))
@@ -1088,7 +1148,7 @@ pub fn tab_strip(view: View, width: u16) -> Line<'static> {
     }
 
     let nums: Vec<Span<'static>> = std::iter::once(Span::styled(mark(" 0".into(), current.is_none()), if current.is_none() { bold() } else { dim() }))
-        .chain(PageId::ALL.iter().map(|p| {
+        .chain(pages.iter().map(|p| {
             let here = current == Some(*p);
             Span::styled(mark(format!(" {}", p.key_digit()), here), if here { bold() } else { dim() })
         }))
@@ -1098,9 +1158,11 @@ pub fn tab_strip(view: View, width: u16) -> Line<'static> {
         return widgets::fit_line(nums, w);
     }
 
-    let (label, n) = current.map_or_else(|| ("overview".to_string(), 0), |p| (p.title().to_lowercase(), p.number()));
+    // #513: the count is of the pages OFFERED (eight without a gateway), so the position is the
+    // page's place among them, not its key digit - with a gateway the two are the same number
+    let (label, n) = current.map_or_else(|| ("overview".to_string(), 0), |p| (p.title().to_lowercase(), pages.iter().position(|q| *q == p).map_or(p.number(), |i| i + 1)));
     let short = if n > 0 {
-        vec![Span::styled(format!(" {label} {n}/{} ", PageId::ALL.len()), bold())]
+        vec![Span::styled(format!(" {label} {n}/{} ", pages.len()), bold())]
     } else {
         vec![Span::styled(format!(" {label} "), bold())]
     };
@@ -1148,7 +1210,7 @@ pub fn chrome_tabs(app: &App, width: u16) -> Line<'static> {
     if w <= reserve + 4 {
         return widgets::fit_line(vec![Span::styled(suffix, dim())], w);
     }
-    let mut spans = tab_strip(app.view, (w - reserve) as u16).spans;
+    let mut spans = tab_strip_pages(app.view, &tab_pages(app), (w - reserve) as u16).spans;
     let used = spans_len(&spans);
     spans.push(Span::raw(" ".repeat(w.saturating_sub(used + suffix.chars().count()))));
     spans.push(Span::styled(suffix, dim()));
@@ -1247,6 +1309,39 @@ fn draw_classic_with_key_hints(f: &mut Frame, app: &App, s: &Status, area: Rect,
     }
 }
 
+/// #513: the help is BUILT per frame, not a static table - with no gateway, the Pages rows that
+/// name a hidden page keep only the pages that exist (`4 5 6` becomes `5 6`, `7 8 9` becomes
+/// `8 9` - the numbers of the pages that remain are unchanged), USERS' own `s` row goes, `c` names
+/// the GPUS charts alone, and the ring rows say "the visible pages", not "all ten". With a gateway the content is byte-identical
+/// to the static `HELP_GROUPS` (card #257 wording, #231 rows) and every pinning test on it holds.
+pub fn help_groups(gate_absent: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    HELP_GROUPS
+        .iter()
+        .map(|(group, keys)| {
+            let keys: Vec<(&'static str, &'static str)> = keys
+                .iter()
+                .copied()
+                .filter_map(|(k, d)| {
+                    if !gate_absent {
+                        return Some((k, d));
+                    }
+                    match (*group, k) {
+                        ("Pages", "4 5 6") => Some(("5 6", "TOKENS  MODEL")),
+                        ("Pages", "7 8 9") => Some(("8 9", "ALERTS  INCIDENTS")),
+                        // s sorts the USERS table: no USERS page, no s row; c still styles the GPUS charts
+                        ("Pages", "s") => None,
+                        ("Pages", "c") => Some((k, "GPUS charts: colour lines / braille dots (default dots)")),
+                        ("Pages", "tab / shift-tab") => Some((k, "next / previous stop in the ring - the overview then the visible pages, wraps at the overview")),
+                        ("Overview", "tab / shift-tab") => Some((k, "step through the overview and the visible pages, wrapping")),
+                        _ => Some((k, d)),
+                    }
+                })
+                .collect();
+            (*group, keys)
+        })
+        .collect()
+}
+
 pub const HELP_GROUPS: [(&str, &[(&str, &str)]); 6] = [
     // #182: `v` switches between TWO overview shapes - the redesigned page 1 (default: since
     // #227/#255 a grid of boxes, at most two columns; since #258 the status line on top, the tab
@@ -1316,7 +1411,10 @@ fn draw_help(f: &mut Frame, app: &App) {
     let inner_w = w.saturating_sub(2) as usize;
     let beside = inner_w >= HELP_KEY_W + HELP_MIN_DESC_W;
     let mut lines = Vec::new();
-    for (group, keys) in HELP_GROUPS {
+    // #513: the help lists only what the screen offers - the Pages rows naming a hidden page
+    // (no gateway) are not shown, and the ring's row says "the visible pages"
+    let gate_absent = app.status.as_ref().is_some_and(|s| s.gate.absent);
+    for (group, keys) in help_groups(gate_absent) {
         lines.push(Line::styled(format!(" {group}"), bold()));
         for (k, d) in keys {
             if beside {

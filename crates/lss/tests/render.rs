@@ -1880,6 +1880,152 @@ fn strangers_machine() -> Status {
     s
 }
 
+/// Card #513: with NO gateway (`gate.absent` - a stock SGLang/vLLM/Ollama install, no gate_url),
+/// USERS (4) and GATEWAY (7) are hidden: `visible_pages` drops them, Tab / BackTab from the
+/// overview walk the other eight and wrap without ever landing on them, their keys do nothing
+/// (the reader stays put), the classic grid's Enter on the USERS box stays on the overview, the
+/// tab strip does not offer them, and the help lists only the pages that exist. The eight that
+/// remain keep their numbers - skipped, never renumbered.
+#[test]
+fn gateway_pages_are_hidden_when_gate_url_is_empty() {
+    let visible = PageId::visible_pages(true);
+    assert!(!visible.contains(&PageId::Users) && !visible.contains(&PageId::Gateway), "{visible:?}");
+    assert_eq!(visible, [PageId::Latency, PageId::Load, PageId::Gpus, PageId::Tokens, PageId::Model, PageId::Alerts, PageId::Incidents, PageId::Advice]);
+    let (mut a, _) = app(strangers_machine());
+    // Tab from the overview: the eight visible pages in key order, then back to the overview
+    let mut walked = Vec::new();
+    for _ in 0..=visible.len() {
+        a.on_key(KeyCode::Tab);
+        match &a.view {
+            View::Page(p) => walked.push(*p),
+            View::Overview => break,
+            other => panic!("Tab left the ring: {other:?}"),
+        }
+    }
+    assert_eq!(a.view, View::Overview, "the ring wraps back to the overview after the visible pages: {walked:?}");
+    assert_eq!(walked, visible, "Tab from the overview never lands on USERS or GATEWAY");
+    // BackTab: the same ring, reversed
+    let mut back = Vec::new();
+    for _ in 0..=visible.len() {
+        a.on_key(KeyCode::BackTab);
+        match &a.view {
+            View::Page(p) => back.push(*p),
+            View::Overview => break,
+            other => panic!("BackTab left the ring: {other:?}"),
+        }
+    }
+    assert_eq!(a.view, View::Overview, "{back:?}");
+    back.reverse();
+    assert_eq!(back, visible, "BackTab from the overview never lands on USERS or GATEWAY");
+    // a hidden page's key does nothing; the others keep their numbers
+    a.on_key(KeyCode::Char('4'));
+    assert_eq!(a.view, View::Overview, "4 (USERS) does nothing with no gateway");
+    a.on_key(KeyCode::Char('7'));
+    assert_eq!(a.view, View::Overview, "7 (GATEWAY) does nothing with no gateway");
+    a.on_key(KeyCode::Char('5'));
+    assert_eq!(a.view, View::Page(PageId::Tokens), "TOKENS keeps 5 - skipped, not renumbered");
+    a.on_key(KeyCode::Char('4'));
+    assert_eq!(a.view, View::Page(PageId::Tokens), "a hidden page's key leaves the reader where they are");
+    a.on_key(KeyCode::Char('8'));
+    assert_eq!(a.view, View::Page(PageId::Alerts), "ALERTS keeps 8");
+    a.on_key(KeyCode::Esc);
+    // the tab strip offers only the visible pages, and counts them
+    let strip: String = lss::ui::chrome_tabs(&a, 200).spans.iter().map(|s| s.content.to_string()).collect();
+    assert!(strip.contains("0 overview") && strip.contains("5 tokens") && strip.contains("8 alerts") && strip.contains("a advice"), "{strip:?}");
+    assert!(!strip.contains("users") && !strip.contains("gateway"), "{strip:?}");
+    // the narrowest tier counts the pages offered, not the key digit: TOKENS is the 4th of 8
+    a.open(PageId::Tokens);
+    let short = (12..=40).rev().map(|w| lss::ui::chrome_tabs(&a, w).spans.iter().map(|s| s.content.to_string()).collect::<String>()).find(|t| t.contains("tokens") && t.contains('/')).expect("a width narrow enough for the short tier");
+    assert!(short.contains("tokens 4/8"), "the short strip counts the pages offered: {short:?}");
+    a.on_key(KeyCode::Esc);
+    // the classic grid: Enter on the USERS box stays on the overview
+    let (mut c, _) = classic(strangers_machine());
+    c.focus = Panel::Users;
+    c.on_key(KeyCode::Enter);
+    assert_eq!(c.view, View::Overview, "Enter on USERS opens nothing with no gateway");
+    // the help lists no USERS/GATEWAY page, and the other rows keep their numbers
+    let groups = lss::ui::help_groups(true);
+    let pages = &groups.iter().find(|(g, _)| *g == "Pages").expect("a Pages group").1;
+    assert!(pages.contains(&("1 2 3", "LATENCY  LOAD  GPUS")) && pages.contains(&("5 6", "TOKENS  MODEL")) && pages.contains(&("8 9", "ALERTS  INCIDENTS")) && pages.contains(&("a", "ADVICE")), "{pages:?}");
+    assert!(!pages.iter().any(|(k, d)| *k == "s" || d.contains("USERS") || d.contains("GATEWAY")), "{pages:?}");
+}
+
+/// Card #513, the other side: with a gateway configured every page is offered - all ten, the Tab
+/// ring, the keys, the strip and the help exactly as before the card (`help_groups(false)` IS
+/// `HELP_GROUPS`, byte for byte).
+#[test]
+fn gateway_pages_are_shown_when_gate_url_is_set() {
+    assert_eq!(PageId::visible_pages(false), PageId::ALL);
+    let (mut a, _) = app(golden());
+    assert!(!a.status.as_ref().unwrap().gate.absent, "golden() has a gateway");
+    let mut walked = Vec::new();
+    for _ in 0..=PageId::ALL.len() {
+        a.on_key(KeyCode::Tab);
+        match &a.view {
+            View::Page(p) => walked.push(*p),
+            View::Overview => break,
+            other => panic!("Tab left the ring: {other:?}"),
+        }
+    }
+    assert_eq!(walked, PageId::ALL, "Tab walks all ten pages with a gateway");
+    a.on_key(KeyCode::Char('4'));
+    assert_eq!(a.view, View::Page(PageId::Users));
+    a.on_key(KeyCode::Char('7'));
+    assert_eq!(a.view, View::Page(PageId::Gateway));
+    let strip: String = lss::ui::chrome_tabs(&a, 200).spans.iter().map(|s| s.content.to_string()).collect();
+    assert!(strip.contains("4 users") && strip.contains("[7 gateway]") && strip.contains("a advice"), "{strip:?}");
+    let short: String = lss::ui::chrome_tabs(&a, 30).spans.iter().map(|s| s.content.to_string()).collect();
+    assert!(short.contains("gateway 7/10"), "{short:?}");
+    let fixed: Vec<(&str, Vec<(&str, &str)>)> = lss::ui::HELP_GROUPS.iter().map(|(g, k)| (*g, k.to_vec())).collect();
+    assert_eq!(lss::ui::help_groups(false), fixed, "with a gateway the help is the static table, unchanged");
+}
+
+/// Card #513: a stranger's install with no gateway (a stock SGLang/vLLM/Ollama, no gate_url) is
+/// not a fault. Both overview shapes say the one plain line, "no gateway configured", where the
+/// gateway's boxes would be - dim, never red - and none of "error", "failed", "unreachable"
+/// appears at any size; the text report agrees.
+#[test]
+fn no_gateway_shows_one_plain_optional_line_not_errors() {
+    fn clean(text: &str, what: &str) {
+        let lower = text.to_lowercase();
+        for needle in ["error", "failed", "unreachable", "gate down"] {
+            assert!(!lower.contains(needle), "{what}: {needle:?} must not appear - no gateway is optional, not a fault\n{text}");
+        }
+    }
+    let (mut a, now) = app(strangers_machine());
+    let (c, _) = classic(strangers_machine());
+    // every size, both shapes: nothing red, no fault words
+    for (w, h) in OVERVIEW_GOLDEN_SIZES.into_iter().chain([(63, 15), (63, 24), (94, 15), (126, 41)]) {
+        for (name, shape) in [("page 1", &a), ("classic", &c)] {
+            let shot = render(shape, w, h, now);
+            assert_eq!(shot.red_cells(), 0, "{name} {w}x{h}: no gateway is not an error\n{}", shot.text);
+            clean(&shot.text, &format!("{name} {w}x{h}"));
+        }
+    }
+    // the classic grid: LANES / USERS say the one line
+    let shot = render(&c, 126, 41, now);
+    assert_all(&shot, &["o LANES (no gateway)", "no gateway configured: requests go straight to the engine.", "o USERS (no gateway)", "no gateway configured: nothing tells users apart"]);
+    // page 1 (the default): the LANES and USERS boxes each carry it - read the whole page,
+    // scrolling, so the assertion does not depend on where the boxes land at this height
+    let mut seen = render(&a, 126, 41, now).text;
+    for _ in 0..10 {
+        let shot = press(&mut a, KeyCode::PageDown, 126, 41, now);
+        assert_eq!(shot.red_cells(), 0, "nothing red\n{}", shot.text);
+        seen.push_str(&shot.text);
+    }
+    // (the two-column box wraps the line's tail; the words before the wrap are what is pinned)
+    assert!(seen.contains("no gateway configured (optional): lanes only exist") && seen.contains("no gateway configured (optional): no per-user data"), "page 1 says the plain line in both gateway boxes\n{seen}");
+    clean(&seen, "page 1 at 126x41, scrolled");
+    // and the text report agrees in words
+    let text = lss::plain::status(&strangers_machine(), now);
+    assert!(text.contains("GATE     no gateway configured"), "{text}");
+    clean(&text, "plain report");
+}
+
+/// the engine reports no numbers (Ollama, or a model with no metrics): every number the engine
+/// does not publish reads `n/a (not reported by Ollama)` - never 0 - nothing is red, LANES /
+/// USERS say there is no gateway, GPUS is not on the screen, and the probe (C1) still gives the
+/// speed.
 #[test]
 fn an_engine_that_reports_nothing_reads_n_a_never_zero_and_nothing_is_red() {
     let (a, now) = classic(strangers_machine());

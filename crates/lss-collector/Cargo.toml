@@ -23,3 +23,6 @@ libc = "0.2"
 [dev-dependencies]
 # card #308: throwaway certificates for the TLS fake engine in tls.rs's tests (never shipped)
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+# card #443 r4: the fake engine records request paths in a Mutex; parking_lot's lock() returns
+# the guard directly (no unwrap), matching the rule the repo's own code follows
+parking_lot = "0.12.5"

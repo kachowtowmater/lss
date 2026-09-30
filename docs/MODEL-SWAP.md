@@ -49,7 +49,8 @@ curl -s http://<your-server>/v1/models          # the id clients must use now
 Then update each client that pins it, and check each one actually came back.
 
 **The collector also watches one such client for you** (`[rules] omp_config_path`, default
-`~/.omp/agent/config.yml` - the agent harness `omp`, if you run it; empty means not watched): a
+empty = not watched - set it to the path of an omp config, e.g. `~/.omp/agent/config.yml` on the
+box where you run the agent harness `omp`): a
 `modelRoles.default` that does not match what is served, held for `omp_mismatch_hold_secs`
 (default 10 min), raises `omp_default_mismatch` through the same alert pipeline as everything
 else - so a swap that forgets this step, on the box the collector runs on, is still caught. See

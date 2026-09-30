@@ -57,6 +57,21 @@ impl PageId {
         }
     }
 
+    /// The pages the ring, the keys and the tab strip may offer - card #513: LANES, USERS and GATEWAY
+    /// read the gateway's own /gate/health shape, so with NO gateway configured (`gate.absent`,
+    /// a stock SGLang/vLLM install) they can only say one plain line. Those pages are hidden
+    /// rather than removed: they keep their numbers and keys (`4` USERS, `7` GATEWAY) so docs
+    /// and muscle memory hold, and a hidden page is skipped, not renumbered. Empty when there
+    /// is no gateway = the overview alone, whose LANES/USERS boxes already say the one plain
+    /// "no gateway configured" line.
+    pub fn visible_pages(gate_absent: bool) -> Vec<PageId> {
+        Self::ALL
+            .iter()
+            .copied()
+            .filter(|p| !gate_absent || !matches!(p, PageId::Users | PageId::Gateway))
+            .collect()
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             PageId::Latency => "LATENCY",
@@ -306,6 +321,23 @@ pub fn post_json(base: &str, path: &str, body: &serde_json::Value) -> Result<(u1
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Card #513: with NO gateway configured, USERS and GATEWAY are hidden and the other eight
+    /// keep their numbers (the two gateway pages are skipped, never renumbered).
+    #[test]
+    fn visible_pages_skip_users_and_gateway_without_a_gateway() {
+        assert_eq!(PageId::visible_pages(true), [PageId::Latency, PageId::Load, PageId::Gpus, PageId::Tokens, PageId::Model, PageId::Alerts, PageId::Incidents, PageId::Advice]);
+        // numbering is stable: a page keeps its number even when earlier pages are hidden
+        assert_eq!(PageId::Tokens.number(), 5, "TOKENS stays 5 with USERS(4) hidden - skipped, not renumbered");
+        assert_eq!(PageId::Alerts.number(), 8, "ALERTS stays 8 with GATEWAY(7) hidden - skipped, not renumbered");
+    }
+
+    /// Card #513: with a gateway configured, every page is visible - the old ten, in key order.
+    #[test]
+    fn visible_pages_are_all_ten_with_a_gateway() {
+        assert_eq!(PageId::visible_pages(false), PageId::ALL);
+        assert_eq!(PageId::visible_pages(true).len(), 8, "the eight non-gateway pages stay visible");
+    }
 
     /// Card #231: the ring has 10 entries in order, 1-9 then ADVICE at the key `a` - `0` stays
     /// the overview's own key (the orchestrator's correction), never a `PageId`.

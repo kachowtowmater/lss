@@ -18,6 +18,10 @@
 #   source = "CA avg (EIA 2026-06)"          # short label shown by lss ("rate: ...")
 #   source_detail = "..."                    # the long form, for whoever reads this file
 #   source_url = "https://www.eia.gov/..."   # where the number was published
+# Outside the US it asks your country first and takes the price per kWh from your bill in your own
+# currency, recording both (lss keeps printing "$"; the number is what you typed):
+#   country = "DE"                           # ISO-2 code, or the name as typed
+#   currency = "EUR"                         # ISO 4217, when known; absent = not recorded
 #
 # ---------------------------------------------------------------------------------------------
 # OPTION 1 — flat rate: you pay the same $/kWh no matter the hour. Simplest, and honestly labelled

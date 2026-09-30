@@ -166,6 +166,9 @@ kept with the newest wording).
 Rule keys: `test_alert` (operator-injected, `lss-collector --test-alert`), `serve_down`, `serve_down_page`, `gate_down`, `container_restart:serve|gate`,
 `xid:gpuN`, `queue_pressure`, `gate_waiters`, `thermal_temp:gpuN`, `thermal_throttle:gpuN`,
 `thermal_digest`, `gpu_missing`, `c1_decode`, `rejects_413`, `rejects_429`,
+`disk_full` (warn at ≥ 90 % used for 60 s, card #264), `disk_full_page` (page at ≥ 97 %, card #264) and
+`disk_growth` (warn when free space falls ≥ 100 GB within 10 min, card #450 - pace not level; all three on the collector's own `disk_path`)
+(added to this list 2026-09-27, card #463),
 `gate_charge_errors` / `gate_discount_inert` (added 2026-09-22, card #108: the gateway's
 effective-token charging, watched TWO ways from its `/gate/health` `shadow` block - the
 exception form, `charge_errors > 0` held `[rules] charge_errors_secs`, meaning the charge path
@@ -177,7 +180,8 @@ quiet box, and a gate that is not answering at all never fire either rule - `gat
 last one), `omp_default_mismatch`
 (added 2026-09-21, card #36: `[rules] omp_config_path` on THIS box names a model this provider is
 not serving - held `omp_mismatch_hold_secs` before firing so the seconds a swap takes to land does
-not itself alert; `""` = not watched, e.g. a box with no omp installed).
+not itself alert; default empty = not watched - set it to the path of an omp config to watch one,
+e.g. `~/.omp/agent/config.yml` on a box with omp installed).
 
 ## `probe`
 
@@ -559,13 +563,13 @@ the `stalled` arm can fire meanwhile.
 | key | type | meaning |
 |---|---|---|
 | `/gate/health` `shadow.queued_uncached` | number\|null | the TRUE in-flight uncached-prefill total right now (the ledger above), NOT the budget's gauge-derived `queued_charged` that sits beside it. `null` = an older gate or a shadow that cannot answer - never a fabricated 0 |
-| `/gate/health` `shadow.prefill_state` | string | `idle` (ledger below 1 token) \| `ok` (work in flight AND a live measured `prefill_tok_s`) \| `stalled` (work in flight, rate UNKNOWN - Kwon's hang signature: the engine owes prefill work and is not reading) \| `unknown` (the shadow's own read failed; never conflated with the others) |
+| `/gate/health` `shadow.prefill_state` | string | `idle` (ledger below 1 token) \| `ok` (work in flight AND a live measured `prefill_tok_s`) \| `stalled` (work in flight, a rate WAS measured but the current window no longer vouches for it - Kwon's hang signature: the engine owes prefill work and is not reading) \| `unmeasured` (work in flight but NO rate has EVER been measured since this gate process started - after a restart, until `prefill_tok_s` has seen at least 2 advancing points; the rate window is empty because the gate just began, not because the engine stopped reading - never conflated with `stalled`) \| `unknown` (the shadow's own read failed; never conflated with the others) |
 | `/gate/health` `shadow.would_refuse_drain` | bool | what an ENFORCING drain rule WOULD refuse RIGHT NOW: `queued_uncached` at a rate needing more than `DRAIN_SHADOW_THRESHOLD_S` to drain, OR `prefill_state: stalled` with the queue at or above `DRAIN_STALLED_FLOOR_TOKENS` (1,000). The LIVE instantaneous read; the history is the counter below. Recorded and counted, NEVER applied - no request is refused by it |
 | `/gate/health` `shadow.would_refuse_drain_count` | object | card #362 r3: the monotonic per-arm counter for the verdicts written so far - `{threshold, stalled, total}` - incremented at the same moment each admission record writes `would_refuse_drain: true` (per arm: `stalled` when the record's `prefill_state` is `stalled`, else `threshold`), so the counter and the shadow log reconcile exactly. Since gate start; never decremented; decides nothing. `null` fields = an older gate or a shadow that cannot answer |
 | `/gate/health` `shadow.seconds_to_drain_uncached` | number\|null | `queued_uncached / prefill_tok_s`, seconds. `null` when the rate is unknown (never 0 - an unknown rate must read as unknown) |
 | `/gate/health` `shadow.drain_threshold_s` | number | the `DRAIN_SHADOW_THRESHOLD_S` in force (env-overridable; default from the gate's own (private) config docs' derivation) |
 | admission record `queued_uncached` | number | the ledger total AT THIS ADMISSION, including THIS request's own take (its admitted est minus its trie CONFIRMED credit) - the state this request was admitted INTO |
-| admission record `prefill_state` | string | the same three states as health, read at the same moment as the record's `prefill_tok_s` |
+| admission record `prefill_state` | string | the same four states as health (`idle`/`ok`/`stalled`/`unmeasured`; `unknown` is only the health-side fallback when the shadow's own read failed, never written to a record), read at the same moment as the record's `prefill_tok_s` |
 | admission record `seconds_to_drain_uncached` | number\|null | the TRUE drain estimate for the recorded `queued_uncached` |
 | admission record `drain_threshold_s` | number | the threshold in force at this admission |
 | admission record `would_refuse_drain` | bool | the shadow verdict for THIS admission. `true` with `did_admit: true` is the expected shadow shape; each `true` record increments `/gate/health` `shadow.would_refuse_drain_count` (per arm: `stalled`/`threshold` by this record's `prefill_state`) - the count is of WRITTEN verdicts, never a live re-evaluation |

@@ -742,6 +742,11 @@ fn who_rank(r: &lss_core::users::UserRow) -> u8 {
 }
 
 fn who(s: &Status, width: usize) -> Section {
+    // #513: no gateway at all (a stock engine) is not a fault - the one plain line, dim, the
+    // same words LANES and the text report use; a gateway too old to say is the other case
+    if s.gate.absent {
+        return Section { title: "USERS".into(), colour: Color::LightBlue, lines: vec![Line::styled("no gateway configured (optional): no per-user data without one", dim())] };
+    }
     if !s.users.available {
         return Section { title: "USERS".into(), colour: Color::LightBlue, lines: vec![Line::styled("no per-user data (needs a v5.2+ gateway)", dim())] };
     }
@@ -955,7 +960,7 @@ fn lanes(s: &Status) -> Section {
     // read as a standing warning on a calm day. Blue, matching PageId::Gateway's own identity
     // colour (LANES opens that page on Enter) and LOADOUT's established calm colour.
     if s.gate.absent {
-        return Section { title, colour: Color::Blue, lines: vec![Line::styled("no gateway in front of this engine - lanes only exist behind one", dim())] };
+        return Section { title, colour: Color::Blue, lines: vec![Line::styled("no gateway configured (optional): lanes only exist behind one", dim())] };
     }
     let big = crate::report::big;
     let mut lines = Vec::new();

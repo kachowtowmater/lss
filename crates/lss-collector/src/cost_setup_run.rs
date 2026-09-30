@@ -16,6 +16,7 @@
 
 use lss_core::config::expand_home;
 use lss_core::cost_setup::{self as cs, IpLocation, RateOrigin, ZipLookup, IP_SERVICE_NAME, IP_SERVICE_URL};
+use lss_core::country_rates::{self as cr, Country};
 use lss_core::cost_tables::{EIA_MONTH, EIA_RELEASED};
 use std::io::{BufRead, Write};
 
@@ -158,6 +159,13 @@ enum Choice {
 
 fn ask_menu(io: &mut dyn Io) -> Result<Option<Choice>, (i32, String)> {
     let flat = |p: Picked| p.map(|o| o.map(|(v, origin)| Choice::Flat(v, origin)));
+    // card #516: the country first. The built-in averages (ZIP, IP) are US-only (EIA), so a
+    // person anywhere else goes straight to the price on their bill, in their own currency.
+    match ask_country(io)? {
+        None => return Ok(None),
+        Some(Country::Us) => {}
+        Some(Country::Other(code)) => return flat(ask_rate_abroad(io, &code)),
+    }
     io.say("\nElectricity cost - how should lss price the power your GPUs draw?\n");
     io.say(&format!("  1) my ZIP code       - my state's average home rate (U.S. EIA, {EIA_MONTH}); nothing is sent anywhere\n"));
     io.say(&format!("  2) look it up        - from my internet address, via ONE request to {IP_SERVICE_NAME} (asks first)\n"));
@@ -176,6 +184,49 @@ fn ask_menu(io: &mut dyn Io) -> Result<Option<Choice>, (i32, String)> {
         }
     }
     Err((2, "no valid choice after 5 tries".into()))
+}
+
+/// card #516: the wizard's first question. Blank = US (the built-in EIA table's home). A
+/// listed name or a 2-letter code is recorded as that code; an unknown spelling is kept as
+/// typed - the country is provenance, never a decision. A rate typed here is refused in words.
+fn ask_country(io: &mut dyn Io) -> Result<Option<Country>, (i32, String)> {
+    for _ in 0..3 {
+        let Some(a) = io.ask("Your country (2-letter code or name; blank = US) [US]: ") else { return Ok(None) };
+        match cr::parse_country(&a) {
+            Ok(c) => return Ok(Some(c)),
+            Err(e) => io.say(&format!("{e}.\n")),
+        }
+    }
+    Err((1, "no country after 3 tries - cost tracking stays off".into()))
+}
+
+/// card #516: outside the US there is no built-in average, so the price comes off the bill, in
+/// the person's own currency, as a plain decimal. The currency is inferred where the country
+/// makes it obvious (Germany -> EUR) and asked for otherwise; blank leaves it unrecorded.
+fn ask_rate_abroad(io: &mut dyn Io, country: &str) -> Picked {
+    let name = cr::place_name_country(country).unwrap_or(country);
+    io.say(&format!("The built-in averages cover US states only (EIA); for {name} the rate comes from your bill.\n"));
+    let mut rate = None;
+    for _ in 0..3 {
+        let Some(a) = io.ask("Type your electricity price per kWh in your currency (e.g. 0.25 for 25 cents), from your bill: ") else { return Ok(None) };
+        match cr::parse_typed_rate(&a) {
+            Ok(v) => { rate = Some(v); break }
+            Err(e) => io.say(&format!("{e}.\n")),
+        }
+    }
+    let Some(rate) = rate else { return Err((1, "no usable rate after 3 tries - cost tracking stays off".into())) };
+    let currency = match cr::currency_of_country(country) {
+        Some(c) => {
+            io.say(&format!("Recorded in {c} ({name}); lss prints costs with a $ sign - read them as {c}.\n"));
+            Some(c.to_string())
+        }
+        None => {
+            let Some(a) = io.ask("Its currency code (e.g. EUR, GBP; blank = leave unset): ") else { return Ok(None) };
+            let c = a.trim().to_ascii_uppercase();
+            if c.is_empty() { None } else { Some(c) }
+        }
+    };
+    Ok(Some((rate, RateOrigin::ManualAbroad { country: country.to_string(), currency })))
 }
 
 /// Non-interactive `--zip`: one answer, no retries.
@@ -628,11 +679,11 @@ mod tests {
         assert_eq!(run(&o, &mut io), 0);
         assert_ne!(io.written().unwrap(), "mine");
         // interactive: asked, default is NO
-        let mut io = Script::new(&["3", "0.2", ""]);
+        let mut io = Script::new(&["", "3", "0.2", ""]);
         io.files.insert("/cfg/rates.toml".into(), "mine".into());
         assert_eq!(run(&opts(Mode::Ask), &mut io), 3);
         assert_eq!(io.written().unwrap(), "mine");
-        let mut io = Script::new(&["3", "0.2", "y"]);
+        let mut io = Script::new(&["", "3", "0.2", "y"]);
         io.files.insert("/cfg/rates.toml".into(), "mine".into());
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0);
         assert_ne!(io.written().unwrap(), "mine");
@@ -650,7 +701,7 @@ mod tests {
 
     #[test]
     fn interactive_zip_path_retries_bad_input_then_accepts() {
-        let mut io = Script::new(&["", "abc", "00012", "94103", ""]);
+        let mut io = Script::new(&["", "", "abc", "00012", "94103", ""]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("not a US ZIP code") && io.said.contains("no US ZIP code starts with 000"), "{}", io.said);
         assert_eq!(parsed(&io).source.as_deref(), Some("CA avg (EIA 2026-06)"));
@@ -659,7 +710,7 @@ mod tests {
 
     #[test]
     fn interactive_territory_zip_goes_to_manual_rate() {
-        let mut io = Script::new(&["1", "00901", "0.27"]);
+        let mut io = Script::new(&["", "1", "00901", "0.27"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("Puerto Rico is not in EIA's state table"));
         assert_eq!(parsed(&io).source.as_deref(), Some("entered by hand (2026-09-24)"));
@@ -667,14 +718,14 @@ mod tests {
 
     #[test]
     fn declining_the_average_asks_for_a_rate() {
-        let mut io = Script::new(&["1", "10001", "n", "0.25"]);
+        let mut io = Script::new(&["", "1", "10001", "n", "0.25"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0);
         assert_eq!(parsed(&io).source.as_deref(), Some("entered by hand (2026-09-24)"));
     }
 
     #[test]
     fn ip_lookup_needs_consent_and_declining_sends_nothing() {
-        let mut io = Script::new(&["2", "", "60601", ""]); // Enter at consent = NO (default)
+        let mut io = Script::new(&["", "2", "", "60601", ""]); // Enter at consent = NO (default)
         io.ip = Ok(r#"{"region":"California","country":"US"}"#.into());
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert_eq!(io.ip_calls, 0, "no consent = no request");
@@ -684,7 +735,7 @@ mod tests {
 
     #[test]
     fn ip_lookup_with_consent_makes_one_call_and_uses_the_state() {
-        let mut io = Script::new(&["2", "y", ""]);
+        let mut io = Script::new(&["", "2", "y", ""]);
         io.ip = Ok(r#"{"city":"Austin","region":"Texas","country":"US","postal":"78701"}"#.into());
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert_eq!(io.ip_calls, 1);
@@ -696,7 +747,7 @@ mod tests {
 
     #[test]
     fn ip_lookup_network_failure_falls_back_to_the_zip_question() {
-        let mut io = Script::new(&["2", "y", "98101", ""]);
+        let mut io = Script::new(&["", "2", "y", "98101", ""]);
         io.ip = Err("Could not resolve host: ipinfo.io".into());
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("lookup failed") && io.said.contains("Enter your ZIP code instead"), "{}", io.said);
@@ -705,7 +756,7 @@ mod tests {
 
     #[test]
     fn ip_lookup_outside_the_us_asks_for_a_rate() {
-        let mut io = Script::new(&["2", "y", "0.40"]);
+        let mut io = Script::new(&["", "2", "y", "0.40"]);
         io.ip = Ok(r#"{"city":"Berlin","region":"Berlin","country":"DE"}"#.into());
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("outside the US (DE)"));
@@ -729,10 +780,10 @@ mod tests {
 
     #[test]
     fn skip_and_end_of_input_write_nothing() {
-        let mut io = Script::new(&["4"]);
+        let mut io = Script::new(&["", "4"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0);
         assert!(io.written().is_none() && io.said.contains("cost tracking stays off"));
-        let mut io = Script::new(&[]); // Ctrl-D at the menu
+        let mut io = Script::new(&[]); // Ctrl-D at the country question
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0);
         assert!(io.written().is_none());
     }
@@ -780,7 +831,7 @@ mod tests {
     fn menu_choice_5_takes_a_typed_time_of_use_plan_and_writes_one_the_collector_prices() {
         // on-peak 0.52, 16-21 (Enter = defaults), off-peak 31c, weekend = Enter (same as on-peak),
         // seasons yes: Jun (Enter) .. Oct (Enter), winter peak 0.45; fixed 0.25
-        let mut io = Script::new(&["5", "0.52", "", "", "31c", "", "y", "", "", "0.45", "0.25"]);
+        let mut io = Script::new(&["", "5", "0.52", "", "", "31c", "", "y", "", "", "0.45", "0.25"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("5) time-of-use plan"), "{}", io.said);
         let t = parsed(&io);
@@ -796,14 +847,14 @@ mod tests {
     fn a_tou_plan_with_bad_numbers_is_asked_again_and_an_ended_input_writes_nothing() {
         // a price of 0, then 0.5; hour 25 (refused) then 17; end 16 (before the start: the whole plan
         // is refused in words and asked once more) ...
-        let mut io = Script::new(&["5", "0", "0.5", "25", "17", "16", "0.2", "", "", "", "0.5", "17", "22", "0.2", "", "", ""]);
+        let mut io = Script::new(&["", "5", "0", "0.5", "25", "17", "16", "0.2", "", "", "", "0.5", "17", "22", "0.2", "", "", ""]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("is not a whole number from 0 to 23"), "{}", io.said);
         assert!(io.said.contains("across midnight is not supported"), "{}", io.said);
         let t = parsed(&io);
         assert_eq!(t.price_for(lss_core::rates::DayContext { hour: 21, is_summer: false, is_weekend_or_holiday: false }).map(|(v, _)| v), Some(0.5), "no seasons: winter uses the same plan");
         // the input ends half way: nothing is written, cost stays off
-        let mut io = Script::new(&["5", "0.52", "16"]);
+        let mut io = Script::new(&["", "5", "0.52", "16"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0);
         assert!(io.written().is_none(), "{}", io.said);
     }
@@ -812,7 +863,7 @@ mod tests {
     fn a_tou_plan_that_looks_like_a_slip_is_asked_about_and_typed_again_on_no() {
         // card #325: off-peak 0.60 above on-peak 0.52 -> "Are you sure?" -> n -> typed again; then
         // the fixed charge 21 (the verification's slip) -> "Are you sure?" -> y keeps it
-        let mut io = Script::new(&["5", "0.52", "", "", "0.60", "", "", "0.25", "n", "0.52", "", "", "0.31", "", "", "21", "y"]);
+        let mut io = Script::new(&["", "5", "0.52", "", "", "0.60", "", "", "0.25", "n", "0.52", "", "", "0.31", "", "", "21", "y"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("Are you sure? off-peak ($0.60/kWh) is dearer than on-peak ($0.52/kWh)"), "{}", io.said);
         assert!(io.said.contains("Are you sure? a fixed charge of $21 a day"), "{}", io.said);
@@ -825,7 +876,7 @@ mod tests {
     fn the_winter_question_says_it_covers_every_day_of_winter() {
         // card #325: render writes the winter periods with day_kind = "any", so the weekend price is
         // a SUMMER price - the question has to say the winter price applies on weekends too
-        let mut io = Script::new(&["5", "0.52", "", "", "0.31", "0.40", "y", "", "", "0.45", ""]);
+        let mut io = Script::new(&["", "5", "0.52", "", "", "0.31", "0.40", "y", "", "", "0.45", ""]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("Winter on-peak price, $ per kWh (the same hours, EVERY day in winter - weekends too)"), "{}", io.said);
         let t = parsed(&io);
@@ -834,7 +885,7 @@ mod tests {
 
     #[test]
     fn a_typed_tou_plan_never_replaces_an_existing_file_unasked() {
-        let mut io = Script::new(&["5", "0.52", "", "", "0.31", "", "", "", "n"]);
+        let mut io = Script::new(&["", "5", "0.52", "", "", "0.31", "", "", "", "n"]);
         io.files.insert("/cfg/rates.toml".into(), "old".into());
         assert_eq!(run(&opts(Mode::Ask), &mut io), 3, "{}", io.said);
         assert_eq!(io.written().map(String::as_str), Some("old"));
@@ -847,17 +898,17 @@ mod tests {
     #[test]
     fn a_flat_rate_typed_as_a_bare_small_number_is_said_back_as_cents_and_asked_about() {
         // card #332: menu 3, "2.5" -> "Are you sure? '2.5' reads as 2.5 cents = $0.025/kWh" -> n -> typed again
-        let mut io = Script::new(&["3", "2.5", "n", "0.25"]);
+        let mut io = Script::new(&["", "3", "2.5", "n", "0.25"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("Are you sure? '2.5' reads as 2.5 cents = $0.025/kWh, below almost any home rate"), "{}", io.said);
         assert_eq!(price_at(&io, 1), Some(0.25), "the retyped rate was written");
         // y keeps it: 2.5 cents is odd, not impossible
-        let mut io = Script::new(&["3", "2.5", "y"]);
+        let mut io = Script::new(&["", "3", "2.5", "y"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert_eq!(price_at(&io, 1), Some(0.025));
         // said explicitly (2.5c), or an ordinary bare number of cents (31): no question
         for (typed, want) in [("2.5c", 0.025), ("31", 0.31), ("0.31", 0.31)] {
-            let mut io = Script::new(&["3", typed]);
+            let mut io = Script::new(&["", "3", typed]);
             assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{typed}: {}", io.said);
             assert!(!io.said.contains("Are you sure?"), "{typed}: {}", io.said);
             assert_eq!(price_at(&io, 1), Some(want), "{typed}");
@@ -867,7 +918,7 @@ mod tests {
     #[test]
     fn a_tou_price_typed_as_a_bare_small_number_is_said_back_as_cents_and_asked_about() {
         // card #332 (rv lss-inst-v2 on #325): on-peak "2.5" -> asked -> n -> 0.52 typed again
-        let mut io = Script::new(&["5", "2.5", "n", "0.52", "", "", "0.31", "", "", ""]);
+        let mut io = Script::new(&["", "5", "2.5", "n", "0.52", "", "", "0.31", "", "", ""]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("Are you sure? '2.5' reads as 2.5 cents = $0.025/kWh"), "{}", io.said);
         assert_eq!(price_at(&io, 17), Some(0.52), "on-peak is the retyped 0.52");
@@ -884,5 +935,87 @@ mod tests {
         let mut io = Script::new(&[]);
         assert_eq!(run(&opts(Mode::Rate("2.5c".into())), &mut io), 0, "{}", io.said);
         assert_eq!(price_at(&io, 1), Some(0.025));
+    }
+
+    // ---------------------------------------------------------- card #516
+    #[test]
+    fn cost_setup_asks_the_country_first() {
+        let mut io = Script::new(&[]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        assert!(io.said.starts_with("Your country (2-letter code or name; blank = US) [US]: "), "the first thing asked is the country: {}", io.said);
+        assert!(!io.said.contains("Choose 1-5") && !io.said.contains("ZIP"), "nothing else is asked before it: {}", io.said);
+        assert!(io.written().is_none());
+        // a rate typed at the country question is refused in words, then the country is read
+        let mut io = Script::new(&["0.25", "de", "0.25"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        assert!(io.said.contains("'0.25' is not a country"), "{}", io.said);
+        assert_eq!(parsed(&io).source.as_deref(), Some("entered by hand, Germany (2026-09-24)"));
+    }
+
+    #[test]
+    fn cost_setup_us_goes_to_zip_as_before() {
+        for us in ["", "US", "usa", "United States"] {
+            let mut io = Script::new(&[us, "", "94103", ""]);
+            assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{us}: {}", io.said);
+            assert!(io.said.contains("Choose 1-5 [1] ") && io.said.contains("Your 5-digit ZIP code: "), "{us}: {}", io.said);
+            assert!(!io.said.contains("in your currency"), "{us}: no typed-rate question for the US: {}", io.said);
+            let t = parsed(&io);
+            assert_eq!(t.source.as_deref(), Some("CA avg (EIA 2026-06)"));
+            let f = lss_core::rates::read_rates_file(io.written().unwrap()).unwrap();
+            assert_eq!((f.country, f.currency), (None, None), "{us}: a US file records no country");
+            assert_eq!(io.ip_calls, 0);
+        }
+    }
+
+    #[test]
+    fn cost_setup_non_us_country_asks_for_a_typed_rate_with_an_example() {
+        let mut io = Script::new(&["Germany", "0,25"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        assert!(io.said.contains("Type your electricity price per kWh in your currency (e.g. 0.25 for 25 cents), from your bill: "), "{}", io.said);
+        assert!(io.said.contains("cover US states only (EIA); for Germany"), "{}", io.said);
+        assert!(!io.said.contains("Choose 1-5") && !io.said.contains("ZIP"), "no menu, no ZIP question abroad: {}", io.said);
+        assert!(io.said.contains("Recorded in EUR (Germany)"), "{}", io.said);
+        assert!(io.said.contains("rate: entered by hand, Germany (2026-09-24) = $0.25 /kWh"), "{}", io.said);
+        let t = parsed(&io);
+        assert_eq!(t.price_for(lss_core::rates::DayContext { hour: 18, is_summer: true, is_weekend_or_holiday: false }), Some((0.25, "flat")));
+        assert_eq!(io.ip_calls, 0);
+        // a bad answer is said back and asked again; 31 yen is 31, never 31 cents
+        let mut io = Script::new(&["jp", "abc", "31"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        assert!(io.said.contains("'abc' is not a rate"), "{}", io.said);
+        assert_eq!(parsed(&io).price_for(lss_core::rates::DayContext { hour: 0, is_summer: false, is_weekend_or_holiday: false }), Some((31.0, "flat")));
+        // three bad answers = exit 1, nothing written
+        let mut io = Script::new(&["fr", "x", "y", "z"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 1, "{}", io.said);
+        assert!(io.written().is_none());
+    }
+
+    #[test]
+    fn cost_setup_country_is_stored_in_rates_toml() {
+        let mut io = Script::new(&["uk", "0.30"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        let text = io.written().unwrap();
+        assert!(text.contains("country = \"GB\"\n") && text.contains("currency = \"GBP\"\n"), "{text}");
+        let f = lss_core::rates::read_rates_file(text).unwrap();
+        assert_eq!(f.country.as_deref(), Some("GB"));
+        assert_eq!(f.currency.as_deref(), Some("GBP"));
+        assert_eq!(f.source.as_deref(), Some("entered by hand, United Kingdom (2026-09-24)"));
+        // a country the table does not know: kept as typed, and the currency is asked for
+        let mut io = Script::new(&["Bolivia", "0.9", "bob"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        assert!(io.said.contains("Its currency code (e.g. EUR, GBP; blank = leave unset): "), "{}", io.said);
+        let f = lss_core::rates::read_rates_file(io.written().unwrap()).unwrap();
+        assert_eq!((f.country.as_deref(), f.currency.as_deref()), (Some("Bolivia"), Some("BOB")));
+        // blank currency = left unset, still a file the collector prices
+        let mut io = Script::new(&["Bolivia", "0.9", ""]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        let f = lss_core::rates::read_rates_file(io.written().unwrap()).unwrap();
+        assert_eq!((f.country.as_deref(), f.currency), (Some("Bolivia"), None));
+        assert!(!io.written().unwrap().contains("currency ="));
+        assert!(parsed(&io).is_flat());
+        // --rate and a US answer never record a country (files from before this card parse the same)
+        let mut io = Script::new(&[]);
+        assert_eq!(run(&opts(Mode::Rate("0.2".into())), &mut io), 0);
+        assert!(!io.written().unwrap().contains("country"));
     }
 }

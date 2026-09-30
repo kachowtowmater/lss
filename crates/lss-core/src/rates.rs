@@ -317,10 +317,23 @@ pub struct RatesFile {
     pub source_detail: Option<String>,
     #[serde(default)]
     pub source_url: Option<String>,
+    /// card #516: a rate typed for a country outside the US carries its ISO-2 code (or the name
+    /// as typed) and, when known, the ISO 4217 currency the bill is in. Both optional: every
+    /// file written before this card, and every US file, has neither and parses exactly as
+    /// before. Provenance only - the collector never converts; the number is what was typed.
+    #[serde(default)]
+    pub country: Option<String>,
+    #[serde(default)]
+    pub currency: Option<String>,
+}
+
+/// The file as written, provenance fields included (`parse_rates_file` is the pricing view).
+pub fn read_rates_file(text: &str) -> Result<RatesFile, String> {
+    toml::from_str(text).map_err(|e| e.to_string())
 }
 
 pub fn parse_rates_file(text: &str) -> Result<RateTable, String> {
-    let f: RatesFile = toml::from_str(text).map_err(|e| e.to_string())?;
+    let f = read_rates_file(text)?;
     Ok(RateTable::new(f.name, f.effective_date, f.plan, f.fixed_usd_per_day, f.unresolved_usd_per_kwh).with_source(f.source))
 }
 

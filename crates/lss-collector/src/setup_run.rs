@@ -46,6 +46,10 @@ Exit: 0 done, 1 could not write, or a --zip/--rate/--from-ip given was refused o
 /// The first collector's own port; a second engine's collector gets the next one.
 pub const BASE_PORT: u16 = 8099;
 
+/// The README's install one-liner - what to run ON the GPU box when the engine is on another
+/// machine (card #515).
+pub const INSTALL_ONE_LINER: &str = "curl -fsSL https://github.com/kachowtowmater/lss/releases/latest/download/install.sh | bash";
+
 #[derive(Debug, Default, Clone)]
 pub struct Opts {
     pub url: Option<String>,
@@ -622,6 +626,12 @@ fn choose(o: &Opts, io: &mut Io, env: &Env) -> Pick {
     // kind = "auto": swapping the engine behind the same port later needs no edit.
     let mut kind = kind_opt;
     let mut hint: Option<EngineKind> = None;
+    // card #515: `typed` = the address was typed at one of the two 'another machine' entries
+    // (nothing found here, or 'r' in the menu) - it is live-tested and NEVER kept unreachable
+    // without someone saying so; `remote` = it really is another machine (the person said so,
+    // or the host is not this one), so the wizard says which panels need the collector there.
+    let mut typed = false;
+    let mut remote = false;
     if url.is_none() {
         io.say("   asking the usual ports on this machine (SGLang, vLLM, llama.cpp, Ollama, LM Studio, TGI, any OpenAI-compatible server) ...");
         let (found, tried) = (env.scan)();
@@ -639,6 +649,8 @@ fn choose(o: &Opts, io: &mut Io, env: &Env) -> Pick {
                 return Pick::Auto;
             }
             let u = ask_address(io, &a);
+            typed = true;
+            remote = !s::is_local(&u);
             if current.as_ref().is_none_or(|(cur, _, _)| *cur != u) {
                 kind = ask_kind(io, kind);
                 if key.is_empty() {
@@ -665,7 +677,7 @@ fn choose(o: &Opts, io: &mut Io, env: &Env) -> Pick {
                 io.say(&format!("   c) the one configured now: {cur}"));
             }
             let default_pick = cur_in_found.map(|i| (i + 1).to_string()).or_else(|| cur_elsewhere.as_ref().map(|_| "c".to_string())).unwrap_or_else(|| "1".into());
-            let choices = if many { format!("1-{}, a = all of them, o = another address, q = quit", found.len()) } else { "1, o = another address, q = quit".to_string() };
+            let choices = if many { format!("1-{}, a = all of them, r = the server is on another machine, q = quit", found.len()) } else { "1, r = the server is on another machine, q = quit".to_string() };
             loop {
                 let a = io.ask(&format!("   Which one should lss watch? ({choices}{})", if cur_elsewhere.is_some() { ", c = the configured one" } else { "" }), &default_pick).to_ascii_lowercase();
                 match a.as_str() {
@@ -675,9 +687,13 @@ fn choose(o: &Opts, io: &mut Io, env: &Env) -> Pick {
                         break;
                     }
                     "a" | "all" if many => return all_of(&found, io, env),
-                    "o" | "other" => {
-                        let typed = io.ask("   Engine address - URL or host:port (e.g. localhost:8000 or 192.0.2.20:8000):", "");
-                        url = Some(ask_address(io, &typed));
+                    "o" | "other" | "r" | "remote" => {
+                        let addr = io.ask("   Engine address - URL or host:port (e.g. localhost:8000 or 192.0.2.20:8000):", "");
+                        let u = ask_address(io, &addr);
+                        typed = true;
+                        // `a` is the menu choice: 'r' SAYS it is another machine, whatever the host
+                        remote = matches!(a.as_str(), "r" | "remote") || !s::is_local(&u);
+                        url = Some(u);
                         kind = ask_kind(io, kind);
                         if key.is_empty() {
                             key = io.ask_secret("   API key, if the engine was started with one (Enter for none):");
@@ -731,9 +747,21 @@ fn choose(o: &Opts, io: &mut Io, env: &Env) -> Pick {
         let r = (env.test)(&url, kind.or(hint), &key, &tls);
         print_report(io, &url, &key, &r);
         if r.connected() {
+            if remote {
+                // card #515: what a collector on THIS machine can and cannot read from there
+                io.say("   The engine is on another machine. The collector on this machine reads its speed, queue and cache over HTTP.");
+                io.say("   GPU temperature, power and memory, Docker restarts and the kernel Xid log need the collector ON the GPU box.");
+                io.say(&format!("   On that machine, run:  {INSTALL_ONE_LINER}"));
+            }
             return Pick::One(choice(kind, url, key, &tls, ca_chosen));
         }
         if !io.interactive {
+            if typed {
+                // card #515: an address someone typed is never written unreachable when no one
+                // can be asked for another - stop, nothing written (--url keeps the old behaviour)
+                io.say(&format!("   {url} did not answer (see above), and there is no one to ask for another address: stopping."));
+                return Pick::Quit;
+            }
             io.say("   keeping this address anyway: the collector keeps trying, and lss shows the engine DOWN until it answers");
             return Pick::One(choice(kind, url, key, &tls, ca_chosen));
         }
@@ -1527,15 +1555,119 @@ mod tests {
     }
 
     #[test]
-    fn the_input_ending_early_takes_the_defaults_instead_of_looping() {
+    fn the_input_ending_early_stops_instead_of_looping_or_writing_a_typed_address_that_refuses() {
         let d = tmp("eof");
         let o = opts(&d);
         let held = crate::test_ports::refusing_port();
         let port = held.port;
-        // an address that refuses, then the input ends: kept anyway, no endless retry
+        // card #515: a TYPED address that refuses, then the input ends - no endless retry, and
+        // no config with an address no one confirmed (before #515 it was kept anyway)
         let (outcome, text, _) = drive(&o, &format!("127.0.0.1:{port}\n"), vec![]);
+        assert_eq!(outcome, Outcome::Stopped, "{text}");
+        assert!(text.contains("there is no one to ask for another address: stopping"), "{text}");
+        assert!(text.contains("Nothing was written."), "{text}");
+        assert!(!o.config_dir.exists(), "{text}");
+        // --url --yes (a script that installs before the engine is started) still keeps it, in words
+        let d2 = tmp("eof-url");
+        let mut o2 = opts(&d2);
+        o2.url = Some(format!("http://127.0.0.1:{port}"));
+        o2.yes = true;
+        o2.cost = vec!["--skip".into()];
+        let (outcome, text, _) = drive(&o2, "", vec![]);
         assert_eq!(outcome, Outcome::Done, "{text}");
         assert!(text.contains("keeping this address anyway"), "{text}");
+    }
+
+    #[test]
+    fn setup_offers_a_server_on_another_machine() {
+        // one engine found here, the real one is elsewhere: 'r' asks for its address
+        let here = Fake::start(None, true);
+        let there = Fake::start(None, true);
+        let d = tmp("offers-remote");
+        let mut o = opts(&d);
+        o.cost = vec!["--skip".into()];
+        // r = another machine; its host:port; engine 0 = recognise it; no key
+        let (outcome, text, _) = drive(&o, &format!("r\n127.0.0.1:{}\n\n\n", there.port), vec![found(EngineKind::Sglang, &here.url())]);
+        assert_eq!(outcome, Outcome::Done, "{text}");
+        assert!(text.contains("Which one should lss watch? (1, r = the server is on another machine, q = quit)"), "{text}");
+        assert!(text.contains("Engine address - URL or host:port (e.g. localhost:8000 or 192.0.2.20:8000):"), "{text}");
+        let cfg = parse_config(&read(&o.config_dir.join("collector.toml"))).unwrap();
+        assert_eq!(cfg.pinned_engine(), Some((None, there.url())), "the typed address is the one written, not the one found here");
+        // with several found the choice is there too
+        let d2 = tmp("offers-remote-many");
+        let o2 = opts(&d2);
+        let (outcome, text, _) = drive(&o2, "q\n", vec![found(EngineKind::Sglang, &here.url()), found(EngineKind::Vllm, &there.url())]);
+        assert_eq!(outcome, Outcome::Stopped, "{text}");
+        assert!(text.contains("(1-2, a = all of them, r = the server is on another machine, q = quit)"), "{text}");
+    }
+
+    #[test]
+    fn setup_remote_host_port_is_live_tested_and_written() {
+        let here = Fake::start(None, true);
+        let there = Fake::start(None, true);
+        let d = tmp("remote-live");
+        let mut o = opts(&d);
+        o.cost = vec!["--skip".into()];
+        let (outcome, text, _) = drive(&o, &format!("r\n127.0.0.1:{}\n\n\n", there.port), vec![found(EngineKind::Sglang, &here.url())]);
+        assert_eq!(outcome, Outcome::Done, "{text}");
+        let testing = text.find(&format!("== 2/5  Testing {}", there.url())).unwrap_or_else(|| panic!("the typed address is tested: {text}"));
+        let written = text.find("== 4/5").unwrap_or_else(|| panic!("{text}"));
+        assert!(testing < written, "tested BEFORE anything is written: {text}");
+        assert!(text.contains("[ok] models: fake-model-7b"), "{text}");
+        assert!(!there.auth_seen.lock().unwrap().is_empty(), "the live test really asked the remote engine");
+        let cfg = parse_config(&read(&o.config_dir.join("collector.toml"))).unwrap();
+        assert_eq!(cfg.pinned_engine(), Some((None, there.url())));
+    }
+
+    #[test]
+    fn setup_remote_unreachable_host_is_refused_with_a_plain_reason() {
+        let here = Fake::start(None, true);
+        let held = crate::test_ports::refusing_port();
+        let port = held.port;
+        // interactive: the reason in one plain line, then asked again (q here)
+        let d = tmp("remote-refused");
+        let o = opts(&d);
+        let (outcome, text, _) = drive(&o, &format!("r\n127.0.0.1:{port}\n\n\nq\n"), vec![found(EngineKind::Sglang, &here.url())]);
+        assert_eq!(outcome, Outcome::Stopped, "{text}");
+        assert!(text.contains(&format!("Nothing is listening at http://127.0.0.1:{port} (connection refused)")), "{text}");
+        assert!(text.contains("e = change the address or key"), "asked again: {text}");
+        assert!(!o.config_dir.exists(), "nothing written: {text}");
+        // the input ends after the address (no one to ask): stop, never write it
+        let d2 = tmp("remote-refused-eof");
+        let o2 = opts(&d2);
+        let (outcome, text, _) = drive(&o2, &format!("r\n127.0.0.1:{port}\n"), vec![found(EngineKind::Sglang, &here.url())]);
+        assert_eq!(outcome, Outcome::Stopped, "{text}");
+        assert!(text.contains("there is no one to ask for another address: stopping"), "{text}");
+        assert!(!text.contains("keeping this address anyway"), "{text}");
+        assert!(!o2.config_dir.exists(), "nothing written: {text}");
+    }
+
+    #[test]
+    fn setup_remote_explains_which_panels_need_the_collector_on_the_gpu_box() {
+        let here = Fake::start(None, true);
+        let there = Fake::start(None, true);
+        let d = tmp("remote-explains");
+        let mut o = opts(&d);
+        o.cost = vec!["--skip".into()];
+        let (outcome, text, _) = drive(&o, &format!("r\n127.0.0.1:{}\n\n\n", there.port), vec![found(EngineKind::Sglang, &here.url())]);
+        assert_eq!(outcome, Outcome::Done, "{text}");
+        assert!(text.contains("The collector on this machine reads its speed, queue and cache over HTTP."), "{text}");
+        assert!(text.contains("GPU temperature, power and memory, Docker restarts and the kernel Xid log need the collector ON the GPU box."), "{text}");
+        assert!(text.contains(&format!("On that machine, run:  {INSTALL_ONE_LINER}")), "{text}");
+        assert!(INSTALL_ONE_LINER.starts_with("curl -fsSL https://github.com/") && INSTALL_ONE_LINER.ends_with("/install.sh | bash"));
+        // the engine found on THIS machine, or one typed at a local address, gets no such lecture
+        let d2 = tmp("local-no-lecture");
+        let mut o2 = opts(&d2);
+        o2.cost = vec!["--skip".into()];
+        let (outcome, text, _) = drive(&o2, "1\n", vec![found(EngineKind::Sglang, &here.url())]);
+        assert_eq!(outcome, Outcome::Done, "{text}");
+        assert!(!text.contains("need the collector ON the GPU box"), "{text}");
+        let d3 = tmp("local-typed-no-lecture");
+        let mut o3 = opts(&d3);
+        o3.cost = vec!["--skip".into()];
+        let (outcome, text, _) = drive(&o3, &format!("localhost:{}\n\n\n", there.port), vec![]);
+        assert_eq!(outcome, Outcome::Done, "{text}");
+        assert!(!text.contains("need the collector ON the GPU box"), "{text}");
     }
 
     #[test]

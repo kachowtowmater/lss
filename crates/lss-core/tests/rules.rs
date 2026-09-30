@@ -297,6 +297,47 @@ fn omp_default_mismatch_holds_then_fires_and_names_both_ids() {
     assert!(s.run(3600, |_| {}).is_empty());
 }
 
+/// #514: lss ships to boxes without omp, so the watcher is OPT-IN - `omp_config_path` defaults
+/// to empty and nothing is watched unless it is set.
+#[test]
+fn omp_config_path_defaults_to_empty() {
+    let c = RulesConfig::default();
+    assert!(c.omp_config_path.is_empty(), "the default must watch nothing: got {:?}", c.omp_config_path);
+    // the shipped example documents the key as opt-in (commented out, so it parses to the same
+    // default and leaves the watcher off)
+    let shipped = lss_core::config::parse_config(include_str!("../../../packaging/collector.toml.example")).unwrap();
+    assert!(shipped.rules.omp_config_path.is_empty());
+}
+
+/// #514: with the opt-in left off, a served model never maps to a mismatch - the same wiring the
+/// collector applies (`parse_default_model` is only called when a path was given).
+#[test]
+fn omp_watcher_is_silent_when_omp_config_path_is_empty() {
+    let mut s = Sim::new();
+    s.cfg.omp_mismatch_hold_secs = 0;
+    assert!(s.run(7200, |_| {}).is_empty(), "no watched config: no mismatch is ever built, no alert ever fires");
+}
+
+/// #514: when the opt-in is used, the watcher behaves exactly as before - a mismatched
+/// `modelRoles.default` is read from the set path, held, then fires and names both ids.
+#[test]
+fn omp_watcher_still_works_when_omp_config_path_is_set() {
+    // the wiring, as the collector does it: a SET path is read and parsed; an empty one is not
+    // even attempted (that is the empty-path test above)
+    let path = std::env::temp_dir().join("lss-514-omp-config.yml");
+    std::fs::write(&path, "modelRoles:\n  default: acme/model-b\n").unwrap();
+    let omp_default = Some(path.to_string_lossy().into_owned()).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| lss_core::omp::parse_default_model(&t));
+    assert_eq!(omp_default.as_deref(), Some("acme/model-b"), "a set path is read and its default parsed");
+
+    let mut s = Sim::new();
+    s.cfg.omp_mismatch_hold_secs = 300;
+    let a = s.run(310, move |o| {
+        o.omp_mismatch = lss_core::omp::mismatch(omp_default.as_deref(), Some("model-a"));
+    });
+    assert_eq!(rules(&a), vec![("omp_default_mismatch", false)]);
+    assert!(a[0].message.contains("acme/model-b") && a[0].message.contains("model-a"), "{}", a[0].message);
+}
+
 fn set_gpu(o: &mut Observation, idx: usize, temp: f64, mask: u64) {
     let g = &mut o.gpus.as_mut().unwrap()[idx];
     g.temp_c = Some(temp);

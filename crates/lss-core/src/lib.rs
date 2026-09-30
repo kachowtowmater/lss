@@ -8,6 +8,7 @@ pub mod compare;
 pub mod config;
 pub mod cost_setup;
 pub mod cost_tables;
+pub mod country_rates;
 pub mod docker;
 pub mod engine;
 pub mod gate;

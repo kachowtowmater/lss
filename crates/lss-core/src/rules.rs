@@ -76,11 +76,20 @@ impl DiskObs {
     /// reserved) this reads a little HIGHER than `df` (about 0.4 points on the build host's / when
     /// verified - verifier F4). Conservative on purpose: what a build can still write is what fills up.
     pub fn used_pct(&self) -> f64 {
-        if self.total_bytes == 0 { 0.0 } else { 100.0 * (1.0 - self.avail_bytes as f64 / self.total_bytes as f64) }
+        if self.total_bytes == 0 {
+            0.0
+        } else {
+            100.0 * (1.0 - self.avail_bytes as f64 / self.total_bytes as f64)
+        }
     }
     /// `92.0% used (80 GB free of 1000 GB)`
     pub fn describe(&self) -> String {
-        format!("{:.1}% used ({} free of {})", self.used_pct(), gb(self.avail_bytes), gb(self.total_bytes))
+        format!(
+            "{:.1}% used ({} free of {})",
+            self.used_pct(),
+            gb(self.avail_bytes),
+            gb(self.total_bytes)
+        )
     }
 }
 
@@ -153,10 +162,11 @@ pub struct Observation {
     /// block. Two facts, two rules: the charge path RAISING (`charge_errors`), and the
     /// discount being inert with nothing raising at all (`discount_inert()`).
     pub gate_shadow: Option<crate::gate::GateShadow>,
-    /// #36, 2026-09-21: omp's shared config (`~/.omp/agent/config.yml`) on THIS box names a
-    /// default model this provider is not currently serving - `Some((configured, served))`.
-    /// `None` = in sync, or nothing to compare (no omp config on this box, or the served model
-    /// is not known yet). See `lss_core::omp`.
+    /// #36, 2026-09-21; #514, 2026-09-29: omp's shared config, when watched (`omp_config_path`
+    /// set), names a default model this provider is not currently serving -
+    /// `Some((configured, served))`.
+    /// `None` = in sync, or nothing to compare (not watched, or the served model is not known
+    /// yet). See `lss_core::omp`.
     pub omp_mismatch: Option<(String, String)>,
     /// card #264: the collector's own disk (`disk_path`), None when unread or not watched - the
     /// disk rules then hold their state (no reading is not a recovery).
@@ -209,6 +219,35 @@ impl Sustained {
 struct GrowthWindow {
     points: VecDeque<(i64, u64)>,
     rule: Sustained,
+}
+
+/// card #450: avail_bytes watched for a fast DROP inside a sliding window of (ts, avail).
+/// Unlike `GrowthWindow` the value falls when the rule trips, and a recovery needs the drop
+/// over the window to fall back under the line - the window keeps the old high-water avail.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct DiskGrowth {
+    points: VecDeque<(i64, u64)>,
+    rule: Sustained,
+}
+
+impl DiskGrowth {
+    /// Pushes one reading, prunes points older than the window, and returns the biggest drop
+    /// across it: how much MORE space was available at some point in the window than now.
+    /// A reading that GAINED space does not reset the window - losing it again (a file
+    /// appearing and being deleted, or a volume churn) is still the fast-fill the rule watches
+    /// for, so the high-water mark of avail inside the window is kept.
+    fn push(&mut self, now: i64, avail: u64, window: i64) -> u64 {
+        self.points.push_back((now, avail));
+        while self.points.len() > 1 && self.points[1].0 <= now - window {
+            self.points.pop_front();
+        }
+        self.points
+            .iter()
+            .map(|(_, v)| v.saturating_sub(avail))
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 impl GrowthWindow {
@@ -297,7 +336,11 @@ impl FlapTracker {
     }
 
     fn prune(&mut self, now: i64) {
-        while self.flaps.front().is_some_and(|t| *t <= now - FLAP_LABEL_WINDOW_SECS) {
+        while self
+            .flaps
+            .front()
+            .is_some_and(|t| *t <= now - FLAP_LABEL_WINDOW_SECS)
+        {
             self.flaps.pop_front();
         }
     }
@@ -354,7 +397,8 @@ pub struct Engine {
     /// close mid-restart, well before `restart_stable_secs` elapses.
     restart_planned: BTreeMap<String, bool>,
     c1: C1State,
-    /// #36, 2026-09-21: omp's shared config naming a model this provider does not serve
+    /// #36, 2026-09-21; #514: omp's shared config naming a model this provider does not serve -
+    /// armed only when `omp_config_path` is set
     omp_default: Sustained,
     /// #108, 2026-09-22: the gate's effective-token charging, watched two ways
     charge_errors: Sustained,
@@ -364,6 +408,9 @@ pub struct Engine {
     /// card #264: the collector's own disk filling up (warn / page)
     disk_full: Sustained,
     disk_full_page: Sustained,
+    /// card #450: the same disk falling fast - avail_bytes sliding-window, unlike the %
+    /// rules above which watch the level. Pruned points are (ts, avail) with ts >= now - window.
+    disk_growth: DiskGrowth,
     digest: Digest,
     /// what the last evaluation saw: only for `rule_states`, never saved
     #[serde(skip)]
@@ -475,6 +522,7 @@ impl Engine {
         add("gpu_missing", &self.gpu_missing);
         add("disk_full", &self.disk_full);
         add("disk_full_page", &self.disk_full_page);
+        add("disk_growth", &self.disk_growth.rule);
         add("rejects_413", &self.rejects_413.rule);
         add("rejects_429", &self.rejects_429.rule);
         for (i, s) in &self.thermal_temp {
@@ -497,42 +545,181 @@ impl Engine {
     pub fn rule_states(&self, cfg: &RulesConfig, now: i64) -> Vec<RuleState> {
         let l = &self.last;
         let cd = |last: Option<i64>| last.map_or(0, |t| (t + cfg.cooldown_secs - now).max(0));
-        let sustained = |rule: &str, sev: Severity, s: &Sustained, threshold: String, value: String| RuleState {
-            rule: rule.to_string(),
-            severity: sev.as_str().to_string(),
-            state: if s.announced { "firing" } else if s.since.is_some() { "pending" } else { "ok" }.to_string(),
-            threshold,
-            value,
-            pending_since: s.since,
-            last_fired: s.last_sent,
-            cooldown_remaining_s: cd(s.last_sent),
+        let sustained =
+            |rule: &str, sev: Severity, s: &Sustained, threshold: String, value: String| {
+                RuleState {
+                    rule: rule.to_string(),
+                    severity: sev.as_str().to_string(),
+                    state: if s.announced {
+                        "firing"
+                    } else if s.since.is_some() {
+                        "pending"
+                    } else {
+                        "ok"
+                    }
+                    .to_string(),
+                    threshold,
+                    value,
+                    pending_since: s.since,
+                    last_fired: s.last_sent,
+                    cooldown_remaining_s: cd(s.last_sent),
+                }
+            };
+        let updown = |up: bool, s: &Sustained| {
+            if up {
+                "up".to_string()
+            } else {
+                format!("down {}", fmt_duration(s.held_for(now)))
+            }
         };
-        let updown = |up: bool, s: &Sustained| if up { "up".to_string() } else { format!("down {}", fmt_duration(s.held_for(now))) };
         let opt = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |x| format!("{x:.0}"));
         let mut out = vec![
-            sustained("serve_down", Severity::Warn, &self.serve_down, format!("serve down >= {}", fmt_duration(cfg.serve_down_secs)), updown(l.serve_up, &self.serve_down)),
-            sustained("serve_down_page", Severity::Page, &self.serve_down_page, format!("serve down >= {}", fmt_duration(cfg.serve_down_page_secs)), updown(l.serve_up, &self.serve_down_page)),
-            sustained("gate_down", Severity::Warn, &self.gate_down, format!("gate down >= {}", fmt_duration(cfg.gate_down_secs)), updown(l.gate_up, &self.gate_down)),
+            sustained(
+                "serve_down",
+                Severity::Warn,
+                &self.serve_down,
+                format!("serve down >= {}", fmt_duration(cfg.serve_down_secs)),
+                updown(l.serve_up, &self.serve_down),
+            ),
+            sustained(
+                "serve_down_page",
+                Severity::Page,
+                &self.serve_down_page,
+                format!("serve down >= {}", fmt_duration(cfg.serve_down_page_secs)),
+                updown(l.serve_up, &self.serve_down_page),
+            ),
+            sustained(
+                "gate_down",
+                Severity::Warn,
+                &self.gate_down,
+                format!("gate down >= {}", fmt_duration(cfg.gate_down_secs)),
+                updown(l.gate_up, &self.gate_down),
+            ),
             // #108: both rows read from the same /gate/health shadow block
-            sustained("gate_charge_errors", Severity::Warn, &self.charge_errors,
-                format!("gate charge_errors > 0 for >= {}", fmt_duration(cfg.charge_errors_secs)),
-                l.gate_shadow.as_ref().map_or("no reading".to_string(), |sh| format!("{} errors", sh.charge_errors))),
-            sustained("gate_discount_inert", Severity::Warn, &self.discount_inert,
-                format!("warm cache + >= {} admissions + 0 discounted for >= {}", cfg.discount_min_admissions, fmt_duration(cfg.discount_inert_secs)),
-                l.gate_shadow.as_ref().map_or("no reading".to_string(), |sh| format!("{}/{} discounted, warm {}", sh.recent_discounted, sh.recent_admissions,
-                    sh.cache_warm.map_or("?".to_string(), |w| w.to_string())))),
-            sustained("queue_pressure", Severity::Warn, &self.queue, format!("queue >= {:.0} for {}", cfg.queue_reqs, fmt_duration(cfg.queue_secs)), format!("queue {}", opt(l.queue))),
-            sustained("gate_waiters", Severity::Warn, &self.waiters, format!("trusted waiters > 0 for {}", fmt_duration(cfg.waiters_secs)), format!("waiters {}", l.waiters.map_or_else(|| "-".to_string(), |w| w.to_string()))),
-            sustained("gpu_missing", Severity::Hardware, &self.gpu_missing, format!("GPUs < {} for {}", self.gpu_count_seen, fmt_duration(cfg.gpu_missing_secs)), format!("{} of {}", l.gpus.as_ref().map_or(0, Vec::len), self.gpu_count_seen)),
-            sustained("omp_default_mismatch", Severity::Warn, &self.omp_default, format!("omp default != served for {}", fmt_duration(cfg.omp_mismatch_hold_secs)),
-                l.omp_mismatch.as_ref().map_or_else(|| "in sync".to_string(), |(c, s)| format!("{c} != {s}"))),
+            sustained(
+                "gate_charge_errors",
+                Severity::Warn,
+                &self.charge_errors,
+                format!(
+                    "gate charge_errors > 0 for >= {}",
+                    fmt_duration(cfg.charge_errors_secs)
+                ),
+                l.gate_shadow
+                    .as_ref()
+                    .map_or("no reading".to_string(), |sh| {
+                        format!("{} errors", sh.charge_errors)
+                    }),
+            ),
+            sustained(
+                "gate_discount_inert",
+                Severity::Warn,
+                &self.discount_inert,
+                format!(
+                    "warm cache + >= {} admissions + 0 discounted for >= {}",
+                    cfg.discount_min_admissions,
+                    fmt_duration(cfg.discount_inert_secs)
+                ),
+                l.gate_shadow
+                    .as_ref()
+                    .map_or("no reading".to_string(), |sh| {
+                        format!(
+                            "{}/{} discounted, warm {}",
+                            sh.recent_discounted,
+                            sh.recent_admissions,
+                            sh.cache_warm.map_or("?".to_string(), |w| w.to_string())
+                        )
+                    }),
+            ),
+            sustained(
+                "queue_pressure",
+                Severity::Warn,
+                &self.queue,
+                format!(
+                    "queue >= {:.0} for {}",
+                    cfg.queue_reqs,
+                    fmt_duration(cfg.queue_secs)
+                ),
+                format!("queue {}", opt(l.queue)),
+            ),
+            sustained(
+                "gate_waiters",
+                Severity::Warn,
+                &self.waiters,
+                format!("trusted waiters > 0 for {}", fmt_duration(cfg.waiters_secs)),
+                format!(
+                    "waiters {}",
+                    l.waiters.map_or_else(|| "-".to_string(), |w| w.to_string())
+                ),
+            ),
+            sustained(
+                "gpu_missing",
+                Severity::Hardware,
+                &self.gpu_missing,
+                format!(
+                    "GPUs < {} for {}",
+                    self.gpu_count_seen,
+                    fmt_duration(cfg.gpu_missing_secs)
+                ),
+                format!(
+                    "{} of {}",
+                    l.gpus.as_ref().map_or(0, Vec::len),
+                    self.gpu_count_seen
+                ),
+            ),
+            sustained(
+                "omp_default_mismatch",
+                Severity::Warn,
+                &self.omp_default,
+                format!(
+                    "omp default != served for {}",
+                    fmt_duration(cfg.omp_mismatch_hold_secs)
+                ),
+                l.omp_mismatch
+                    .as_ref()
+                    .map_or_else(|| "in sync".to_string(), |(c, s)| format!("{c} != {s}")),
+            ),
         ];
         // card #264: the collector's own disk
-        let disk_value = l.disk.as_ref().map_or_else(|| "no reading".to_string(), |d| format!("{} {}", d.path, d.describe()));
-        for (rule, sev, s, pct) in [("disk_full", Severity::Warn, &self.disk_full, cfg.disk_warn_pct), ("disk_full_page", Severity::Page, &self.disk_full_page, cfg.disk_page_pct)] {
-            out.push(sustained(rule, sev, s, format!("{} >= {pct:.0}% used for {} (recovers below {:.0}%)", cfg.disk_path, fmt_duration(cfg.disk_secs), pct - cfg.disk_recover_margin_pct), disk_value.clone()));
+        let disk_value = l.disk.as_ref().map_or_else(
+            || "no reading".to_string(),
+            |d| format!("{} {}", d.path, d.describe()),
+        );
+        for (rule, sev, s, pct) in [
+            (
+                "disk_full",
+                Severity::Warn,
+                &self.disk_full,
+                cfg.disk_warn_pct,
+            ),
+            (
+                "disk_full_page",
+                Severity::Page,
+                &self.disk_full_page,
+                cfg.disk_page_pct,
+            ),
+        ] {
+            out.push(sustained(
+                rule,
+                sev,
+                s,
+                format!(
+                    "{} >= {pct:.0}% used for {} (recovers below {:.0}%)",
+                    cfg.disk_path,
+                    fmt_duration(cfg.disk_secs),
+                    pct - cfg.disk_recover_margin_pct
+                ),
+                disk_value.clone(),
+            ));
         }
-        let mut indices: Vec<u32> = self.thermal_temp.keys().chain(self.thermal_throttle.keys()).copied().collect();
+        out.push(sustained("disk_growth", Severity::Warn, &self.disk_growth.rule,
+            format!("{} loses >= {:.0} GB free within {} (recovers when the drop over the window falls back under)", cfg.disk_path, cfg.disk_growth_gb, fmt_duration(cfg.disk_growth_secs)),
+            disk_value.clone()));
+        let mut indices: Vec<u32> = self
+            .thermal_temp
+            .keys()
+            .chain(self.thermal_throttle.keys())
+            .copied()
+            .collect();
         indices.extend(l.gpus.iter().flatten().map(|g| g.index));
         indices.sort_unstable();
         indices.dedup();
@@ -540,23 +727,69 @@ impl Engine {
         for i in indices {
             let g = l.gpus.iter().flatten().find(|g| g.index == i);
             let excluded = cfg.thermal_exclude.contains(&i);
-            let note = if excluded { " (excluded: daily digest only)" } else { "" };
-            out.push(sustained(&format!("thermal_temp:gpu{i}"), Severity::Warn, self.thermal_temp.get(&i).unwrap_or(&none),
-                format!(">= {} for {}{note}", crate::units::temp_compact(cfg.thermal_temp_c), fmt_duration(cfg.thermal_secs)), crate::units::temp_opt(g.and_then(|g| g.temp_c), crate::units::TempStyle::Compact)));
-            let flags = g.map(|g| throttle_flags(g.throttle_mask & THROTTLE_THERMAL_MASK)).unwrap_or_default();
-            out.push(sustained(&format!("thermal_throttle:gpu{i}"), Severity::Warn, self.thermal_throttle.get(&i).unwrap_or(&none),
-                format!("thermal slowdown for {}{note}", fmt_duration(cfg.thermal_secs)), if flags.is_empty() { "none".to_string() } else { flags.join("+") }));
+            let note = if excluded {
+                " (excluded: daily digest only)"
+            } else {
+                ""
+            };
+            out.push(sustained(
+                &format!("thermal_temp:gpu{i}"),
+                Severity::Warn,
+                self.thermal_temp.get(&i).unwrap_or(&none),
+                format!(
+                    ">= {} for {}{note}",
+                    crate::units::temp_compact(cfg.thermal_temp_c),
+                    fmt_duration(cfg.thermal_secs)
+                ),
+                crate::units::temp_opt(g.and_then(|g| g.temp_c), crate::units::TempStyle::Compact),
+            ));
+            let flags = g
+                .map(|g| throttle_flags(g.throttle_mask & THROTTLE_THERMAL_MASK))
+                .unwrap_or_default();
+            out.push(sustained(
+                &format!("thermal_throttle:gpu{i}"),
+                Severity::Warn,
+                self.thermal_throttle.get(&i).unwrap_or(&none),
+                format!(
+                    "thermal slowdown for {}{note}",
+                    fmt_duration(cfg.thermal_secs)
+                ),
+                if flags.is_empty() {
+                    "none".to_string()
+                } else {
+                    flags.join("+")
+                },
+            ));
         }
         let floor = self.c1_baseline(cfg).map(|b| b * cfg.c1_ratio);
         out.push(RuleState {
             rule: "c1_decode".into(),
             severity: Severity::Warn.as_str().into(),
-            state: if self.c1.announced { "firing" } else if !self.c1.low_probes.is_empty() { "pending" } else { "ok" }.into(),
+            state: if self.c1.announced {
+                "firing"
+            } else if !self.c1.low_probes.is_empty() {
+                "pending"
+            } else {
+                "ok"
+            }
+            .into(),
             threshold: match floor {
-                Some(f) => format!("valid idle probe < {f:.1} tok/s, {} in a row", cfg.c1_consecutive),
-                None => format!("learning the baseline ({}/{})", self.c1.baseline_samples.len(), cfg.c1_baseline_probes),
+                Some(f) => format!(
+                    "valid idle probe < {f:.1} tok/s, {} in a row",
+                    cfg.c1_consecutive
+                ),
+                None => format!(
+                    "learning the baseline ({}/{})",
+                    self.c1.baseline_samples.len(),
+                    cfg.c1_baseline_probes
+                ),
             },
-            value: format!("{} tok/s, {} low in a row", l.c1_tok_s.map_or_else(|| "-".to_string(), |v| format!("{v:.1}")), self.c1.low_probes.len()),
+            value: format!(
+                "{} tok/s, {} low in a row",
+                l.c1_tok_s
+                    .map_or_else(|| "-".to_string(), |v| format!("{v:.1}")),
+                self.c1.low_probes.len()
+            ),
             pending_since: None,
             last_fired: self.c1.last_sent,
             cooldown_remaining_s: cd(self.c1.last_sent),
@@ -570,28 +803,61 @@ impl Engine {
                 rule: "c1_stale".into(),
                 severity: Severity::Info.as_str().into(),
                 state: "muted".into(),
-                threshold: format!(">= {FLAP_MUTE_THRESHOLD} flaps within {} mutes the row", fmt_duration(FLAP_MUTE_WINDOW_SECS)),
+                threshold: format!(
+                    ">= {FLAP_MUTE_THRESHOLD} flaps within {} mutes the row",
+                    fmt_duration(FLAP_MUTE_WINDOW_SECS)
+                ),
                 value: format!("c1_stale unreliable - {flaps_24h} flaps/24h, muted"),
                 pending_since: self.c1.stale.since,
                 last_fired: self.c1.stale.last_sent,
                 cooldown_remaining_s: cd(self.c1.stale.last_sent),
             });
         } else {
-            out.push(sustained("c1_stale", Severity::Info, &self.c1.stale,
-                format!("no VALID idle reading for {} probe intervals", cfg.c1_stale_probe_intervals),
-                self.c1.last_valid_ts.map_or_else(|| "never measured yet".to_string(), |t| format!("last valid {} ago", fmt_duration(now - t)))));
+            out.push(sustained(
+                "c1_stale",
+                Severity::Info,
+                &self.c1.stale,
+                format!(
+                    "no VALID idle reading for {} probe intervals",
+                    cfg.c1_stale_probe_intervals
+                ),
+                self.c1.last_valid_ts.map_or_else(
+                    || "never measured yet".to_string(),
+                    |t| format!("last valid {} ago", fmt_duration(now - t)),
+                ),
+            ));
         }
-        for (code, win, growth) in [(413, &self.rejects_413, l.growth_413), (429, &self.rejects_429, l.growth_429)] {
-            out.push(sustained(&format!("rejects_{code}"), Severity::Info, &win.rule,
-                format!("rejected_{code} grows > {} in {}", cfg.reject_growth, fmt_duration(cfg.reject_window_secs)), format!("+{}", growth.unwrap_or(0))));
+        for (code, win, growth) in [
+            (413, &self.rejects_413, l.growth_413),
+            (429, &self.rejects_429, l.growth_429),
+        ] {
+            out.push(sustained(
+                &format!("rejects_{code}"),
+                Severity::Info,
+                &win.rule,
+                format!(
+                    "rejected_{code} grows > {} in {}",
+                    cfg.reject_growth,
+                    fmt_duration(cfg.reject_window_secs)
+                ),
+                format!("+{}", growth.unwrap_or(0)),
+            ));
         }
         // event rules: they fire once per event and have no "firing" state of their own
-        let event = |rule: String, sev: Severity, threshold: &str, pending: Option<i64>, last: Option<i64>| RuleState {
+        let event = |rule: String,
+                     sev: Severity,
+                     threshold: &str,
+                     pending: Option<i64>,
+                     last: Option<i64>| RuleState {
             rule,
             severity: sev.as_str().to_string(),
             state: if pending.is_some() { "pending" } else { "ok" }.to_string(),
             threshold: threshold.to_string(),
-            value: if pending.is_some() { "waiting for it to stay up".to_string() } else { "-".to_string() },
+            value: if pending.is_some() {
+                "waiting for it to stay up".to_string()
+            } else {
+                "-".to_string()
+            },
             pending_since: pending,
             last_fired: last,
             cooldown_remaining_s: cd(last),
@@ -599,17 +865,45 @@ impl Engine {
         for role in ["serve", "gate"] {
             let key = format!("container_restart:{role}");
             let last = self.event_last_sent.get(&key).copied();
-            out.push(event(key, Severity::Warn, "any container restart", self.restart_pending.get(role).copied(), last));
+            out.push(event(
+                key,
+                Severity::Warn,
+                "any container restart",
+                self.restart_pending.get(role).copied(),
+                last,
+            ));
         }
-        let mut xid_keys: Vec<&String> = self.event_last_sent.keys().filter(|k| k.starts_with("xid:")).collect();
+        let mut xid_keys: Vec<&String> = self
+            .event_last_sent
+            .keys()
+            .filter(|k| k.starts_with("xid:"))
+            .collect();
         xid_keys.sort();
         if xid_keys.is_empty() {
-            out.push(event("xid:*".into(), Severity::Hardware, "any NVRM Xid in the kernel log", None, None));
+            out.push(event(
+                "xid:*".into(),
+                Severity::Hardware,
+                "any NVRM Xid in the kernel log",
+                None,
+                None,
+            ));
         }
         for k in xid_keys {
-            out.push(event(k.clone(), Severity::Hardware, "any NVRM Xid in the kernel log", None, self.event_last_sent.get(k).copied()));
+            out.push(event(
+                k.clone(),
+                Severity::Hardware,
+                "any NVRM Xid in the kernel log",
+                None,
+                self.event_last_sent.get(k).copied(),
+            ));
         }
-        out.push(event("thermal_digest".into(), Severity::Info, "daily summary of the excluded GPUs", None, None));
+        out.push(event(
+            "thermal_digest".into(),
+            Severity::Info,
+            "daily summary of the excluded GPUs",
+            None,
+            None,
+        ));
         out
     }
 
@@ -624,7 +918,10 @@ impl Engine {
             growth_429: self.last.growth_429,
             c1_tok_s: o.probe_tok_s.or(self.last.c1_tok_s),
             omp_mismatch: o.omp_mismatch.clone(),
-            gate_shadow: o.gate_shadow.clone().or_else(|| self.last.gate_shadow.clone()),
+            gate_shadow: o
+                .gate_shadow
+                .clone()
+                .or_else(|| self.last.gate_shadow.clone()),
             disk: o.disk.clone().or_else(|| self.last.disk.take()),
         };
         let mut out = Vec::new();
@@ -642,30 +939,69 @@ impl Engine {
         self.eval_disk(cfg, o, &mut out);
         for msg in &o.test_alerts {
             // no state, no cooldown: a test must fire every time it is asked for
-            out.push(alert(o.now, RULE_TEST_ALERT, Severity::Info, false, format!("[TEST] {msg}")));
+            out.push(alert(
+                o.now,
+                RULE_TEST_ALERT,
+                Severity::Info,
+                false,
+                format!("[TEST] {msg}"),
+            ));
         }
         out
     }
 
     fn eval_serve_down(&mut self, cfg: &RulesConfig, o: &Observation, out: &mut Vec<AlertEvent>) {
         let down = !o.serve_up;
-        let down_for = if down { self.serve_down.held_for(o.now) } else { 0 };
+        let down_for = if down {
+            self.serve_down.held_for(o.now)
+        } else {
+            0
+        };
         let was_down_for = self.serve_down.held_for(o.now);
-        let warn = self.serve_down.step(o.now, down, cfg.serve_down_secs, cfg.cooldown_secs);
+        let warn = self
+            .serve_down
+            .step(o.now, down, cfg.serve_down_secs, cfg.cooldown_secs);
         // The page escalation is its own rule, so a warn that was just sent does not hold it back.
-        let page = self.serve_down_page.step(o.now, down, cfg.serve_down_page_secs, cfg.cooldown_secs);
+        let page =
+            self.serve_down_page
+                .step(o.now, down, cfg.serve_down_page_secs, cfg.cooldown_secs);
         if warn == Edge::Fire {
-            out.push(alert(o.now, "serve_down", Severity::Warn, false,
-                format!("serve DOWN for {} (/v1/models not answering)", fmt_duration(down_for))));
+            out.push(alert(
+                o.now,
+                "serve_down",
+                Severity::Warn,
+                false,
+                format!(
+                    "serve DOWN for {} (/v1/models not answering)",
+                    fmt_duration(down_for)
+                ),
+            ));
         }
         if page == Edge::Fire {
-            out.push(alert(o.now, "serve_down_page", Severity::Page, false,
-                format!("serve STILL DOWN after {} - needs a human", fmt_duration(down_for))));
+            out.push(alert(
+                o.now,
+                "serve_down_page",
+                Severity::Page,
+                false,
+                format!(
+                    "serve STILL DOWN after {} - needs a human",
+                    fmt_duration(down_for)
+                ),
+            ));
         }
         if warn == Edge::Recover || page == Edge::Recover {
-            let sev = if page == Edge::Recover { Severity::Page } else { Severity::Warn };
-            out.push(alert(o.now, "serve_down", sev, true,
-                format!("serve recovered after {} down", fmt_duration(was_down_for))));
+            let sev = if page == Edge::Recover {
+                Severity::Page
+            } else {
+                Severity::Warn
+            };
+            out.push(alert(
+                o.now,
+                "serve_down",
+                sev,
+                true,
+                format!("serve recovered after {} down", fmt_duration(was_down_for)),
+            ));
         }
     }
 
@@ -764,9 +1100,20 @@ impl Engine {
             if self.event_cooled(&key, o.now, cfg.cooldown_secs) {
                 self.event_last_sent.insert(key.clone(), o.now);
                 self.restart_pending.insert(r.role.clone(), o.now);
-                self.restart_planned.insert(r.role.clone(), o.maintenance_active);
-                let (sev, label) = if o.maintenance_active { (Severity::Info, "planned - ") } else { (Severity::Warn, "") };
-                out.push(alert(o.now, &key, sev, false, format!("{label}{} container restarted: {}", r.role, r.detail)));
+                self.restart_planned
+                    .insert(r.role.clone(), o.maintenance_active);
+                let (sev, label) = if o.maintenance_active {
+                    (Severity::Info, "planned - ")
+                } else {
+                    (Severity::Warn, "")
+                };
+                out.push(alert(
+                    o.now,
+                    &key,
+                    sev,
+                    false,
+                    format!("{label}{} container restarted: {}", r.role, r.detail),
+                ));
             } else if owed {
                 self.restart_pending.insert(r.role.clone(), o.now);
             }
@@ -775,7 +1122,12 @@ impl Engine {
             .restart_pending
             .iter()
             .filter(|(role, since)| {
-                let healthy = o.running_roles.contains(role) && if role.as_str() == "serve" { o.serve_up } else { o.gate_up };
+                let healthy = o.running_roles.contains(role)
+                    && if role.as_str() == "serve" {
+                        o.serve_up
+                    } else {
+                        o.gate_up
+                    };
                 healthy && o.now - **since >= cfg.restart_stable_secs
             })
             .map(|(role, _)| role.clone())
@@ -785,26 +1137,51 @@ impl Engine {
             // paired with its own FIRE, not with whatever maintenance_active is NOW: the window
             // may already have been closed (planned work confirmed done) before the container
             // finishes settling
-            let (sev, label) = if self.restart_planned.remove(&role).unwrap_or(false) { (Severity::Info, "planned - ") } else { (Severity::Warn, "") };
-            out.push(alert(o.now, &format!("container_restart:{role}"), sev, true,
-                format!("{label}{role} container recovered: running and answering {} after the restart", fmt_duration(o.now - since))));
+            let (sev, label) = if self.restart_planned.remove(&role).unwrap_or(false) {
+                (Severity::Info, "planned - ")
+            } else {
+                (Severity::Warn, "")
+            };
+            out.push(alert(
+                o.now,
+                &format!("container_restart:{role}"),
+                sev,
+                true,
+                format!(
+                    "{label}{role} container recovered: running and answering {} after the restart",
+                    fmt_duration(o.now - since)
+                ),
+            ));
         }
     }
 
-    /// #36, 2026-09-21: omp's shared config naming a default model this provider does not
-    /// serve - the 2026-09-20 incident (omp fell back to an outside provider without a word)
-    /// this rule exists to make impossible to miss again. Held for `omp_mismatch_hold_secs`
-    /// before firing so the few seconds a swap takes to land in both the served model and (once
-    /// it is re-pointed) omp's own config never look like a fault.
+    /// #36, 2026-09-21; #514, 2026-09-29: omp's shared config naming a default model this
+    /// provider does not serve - the 2026-09-20 incident (omp fell back to an outside provider
+    /// without a word) this rule exists to make impossible to miss again. Held for
+    /// `omp_mismatch_hold_secs` before firing so the few seconds a swap takes to land in both
+    /// the served model and (once it is re-pointed) omp's own config never look like a fault.
+    /// OPT-IN: the collector turns an empty `omp_config_path` (the default) into `None` - a box
+    /// without omp feeds `None` forever and this rule is simply never armed.
     fn eval_omp_default(&mut self, cfg: &RulesConfig, o: &Observation, out: &mut Vec<AlertEvent>) {
         let mismatched = o.omp_mismatch.is_some();
-        match self.omp_default.step(o.now, mismatched, cfg.omp_mismatch_hold_secs, cfg.cooldown_secs) {
+        match self.omp_default.step(
+            o.now,
+            mismatched,
+            cfg.omp_mismatch_hold_secs,
+            cfg.cooldown_secs,
+        ) {
             Edge::Fire => {
                 let (configured, served) = o.omp_mismatch.clone().unwrap_or_default();
                 out.push(alert(o.now, "omp_default_mismatch", Severity::Warn, false,
                     format!("omp's default model ({configured}) is not what is served ({served}) - agent sessions may silently fall back to an outside provider: re-point omp's default at the served id")));
             }
-            Edge::Recover => out.push(alert(o.now, "omp_default_mismatch", Severity::Warn, true, "omp's default model matches what is served again".to_string())),
+            Edge::Recover => out.push(alert(
+                o.now,
+                "omp_default_mismatch",
+                Severity::Warn,
+                true,
+                "omp's default model matches what is served again".to_string(),
+            )),
             Edge::None => {}
         }
     }
@@ -818,14 +1195,27 @@ impl Engine {
             // An Xid storm on one GPU is one alert per cooldown; every line is still an incident.
             if self.event_cooled(&key, o.now, cfg.cooldown_secs) {
                 self.event_last_sent.insert(key.clone(), o.now);
-                out.push(alert(o.now, &key, Severity::Hardware, false,
-                    format!("{} Xid {} - {} [{}]", x.gpu_label(), x.xid, xid_hint(x.xid), x.detail)));
+                out.push(alert(
+                    o.now,
+                    &key,
+                    Severity::Hardware,
+                    false,
+                    format!(
+                        "{} Xid {} - {} [{}]",
+                        x.gpu_label(),
+                        x.xid,
+                        xid_hint(x.xid),
+                        x.detail
+                    ),
+                ));
             }
         }
     }
 
     fn event_cooled(&self, key: &str, now: i64, cooldown: i64) -> bool {
-        self.event_last_sent.get(key).is_none_or(|t| now - t >= cooldown)
+        self.event_last_sent
+            .get(key)
+            .is_none_or(|t| now - t >= cooldown)
     }
 
     /// card #264: `warn` at `disk_warn_pct` used, `page` at `disk_page_pct`, each held
@@ -835,27 +1225,111 @@ impl Engine {
     fn eval_disk(&mut self, cfg: &RulesConfig, o: &Observation, out: &mut Vec<AlertEvent>) {
         let Some(d) = &o.disk else { return };
         let pct = d.used_pct();
-        for (s, line, rule, sev) in [(&mut self.disk_full, cfg.disk_warn_pct, "disk_full", Severity::Warn), (&mut self.disk_full_page, cfg.disk_page_pct, "disk_full_page", Severity::Page)] {
-            let over = if s.announced { pct >= line - cfg.disk_recover_margin_pct } else { pct >= line };
+        for (s, line, rule, sev) in [
+            (
+                &mut self.disk_full,
+                cfg.disk_warn_pct,
+                "disk_full",
+                Severity::Warn,
+            ),
+            (
+                &mut self.disk_full_page,
+                cfg.disk_page_pct,
+                "disk_full_page",
+                Severity::Page,
+            ),
+        ] {
+            let over = if s.announced {
+                pct >= line - cfg.disk_recover_margin_pct
+            } else {
+                pct >= line
+            };
             let e = s.step(o.now, over, cfg.disk_secs, cfg.cooldown_secs);
-            push_edge(out, e, o.now, rule, sev,
-                format!("disk {} on this box is {} - >= {line:.0}% for {}", d.path, d.describe(), fmt_duration(cfg.disk_secs)),
-                format!("disk {} back to {}", d.path, d.describe()));
+            push_edge(
+                out,
+                e,
+                o.now,
+                rule,
+                sev,
+                format!(
+                    "disk {} on this box is {} - >= {line:.0}% for {}",
+                    d.path,
+                    d.describe(),
+                    fmt_duration(cfg.disk_secs)
+                ),
+                format!("disk {} back to {}", d.path, d.describe()),
+            );
         }
+        // card #450: the same disk, watched for PACE not level - avail_bytes fell by
+        // >= disk_growth_gb within the last disk_growth_secs. A poll with no reading drops
+        // the window (stale points would age into a phantom drop).
+        let line = cfg.disk_growth_gb * 1e9;
+        let drop = self
+            .disk_growth
+            .push(o.now, d.avail_bytes, cfg.disk_growth_secs);
+        let e = self.disk_growth.rule.step(
+            o.now,
+            drop as f64 >= line,
+            cfg.disk_secs,
+            cfg.cooldown_secs,
+        );
+        let fill = format!(
+            "lost {:.1} GB free of {} in {} (now {})",
+            drop as f64 / 1e9,
+            d.path,
+            fmt_duration(cfg.disk_growth_secs),
+            d.describe()
+        );
+        push_edge(
+            out,
+            e,
+            o.now,
+            "disk_growth",
+            Severity::Warn,
+            format!("disk {} is filling fast: {fill}", d.path),
+            format!("disk {} is no longer filling fast: {fill}", d.path),
+        );
     }
 
     fn eval_queue(&mut self, cfg: &RulesConfig, o: &Observation, out: &mut Vec<AlertEvent>) {
         // during a bench the queue and the gate's waiters are read as empty: a rule that was
         // pending stops counting, and one that was already firing recovers
-        let q = if o.bench_active { 0.0 } else { o.queue.unwrap_or(0.0) };
-        match self.queue.step(o.now, q >= cfg.queue_reqs, cfg.queue_secs, cfg.cooldown_secs) {
-            Edge::Fire => out.push(alert(o.now, "queue_pressure", Severity::Warn, false,
-                format!("queue pressure: {q:.0} requests queued (>= {:.0}) for {}", cfg.queue_reqs, fmt_duration(cfg.queue_secs)))),
-            Edge::Recover => out.push(alert(o.now, "queue_pressure", Severity::Warn, true,
-                format!("queue pressure recovered: {q:.0} queued"))),
+        let q = if o.bench_active {
+            0.0
+        } else {
+            o.queue.unwrap_or(0.0)
+        };
+        match self.queue.step(
+            o.now,
+            q >= cfg.queue_reqs,
+            cfg.queue_secs,
+            cfg.cooldown_secs,
+        ) {
+            Edge::Fire => out.push(alert(
+                o.now,
+                "queue_pressure",
+                Severity::Warn,
+                false,
+                format!(
+                    "queue pressure: {q:.0} requests queued (>= {:.0}) for {}",
+                    cfg.queue_reqs,
+                    fmt_duration(cfg.queue_secs)
+                ),
+            )),
+            Edge::Recover => out.push(alert(
+                o.now,
+                "queue_pressure",
+                Severity::Warn,
+                true,
+                format!("queue pressure recovered: {q:.0} queued"),
+            )),
             Edge::None => {}
         }
-        let w = if o.bench_active { 0 } else { o.trusted_waiters.unwrap_or(0) };
+        let w = if o.bench_active {
+            0
+        } else {
+            o.trusted_waiters.unwrap_or(0)
+        };
         match self.waiters.step(o.now, w > 0, cfg.waiters_secs, cfg.cooldown_secs) {
             Edge::Fire => out.push(alert(o.now, "gate_waiters", Severity::Warn, false,
                 format!("queue pressure: {w} trusted request(s) waiting at the gate for token budget for {}", fmt_duration(cfg.waiters_secs)))),
@@ -882,7 +1356,10 @@ impl Engine {
             self.digest.last_eval = Some(o.now);
             return;
         };
-        let dt = self.digest.last_eval.map_or(0, |t| (o.now - t).clamp(0, 60));
+        let dt = self
+            .digest
+            .last_eval
+            .map_or(0, |t| (o.now - t).clamp(0, 60));
         self.digest.last_eval = Some(o.now);
         self.digest.window_start.get_or_insert(o.now);
 
@@ -897,28 +1374,85 @@ impl Engine {
                 continue;
             }
             let temp = g.temp_c.unwrap_or(0.0);
-            let e = self.thermal_temp.entry(g.index).or_default().step(o.now, hot, cfg.thermal_secs, cfg.cooldown_secs);
-            push_edge(out, e, o.now, &format!("thermal_temp:gpu{}", g.index), Severity::Warn,
-                format!("GPU{} at {}, >= {} for {}", g.index, crate::units::temp(temp), crate::units::temp(cfg.thermal_temp_c), fmt_duration(cfg.thermal_secs)),
-                format!("GPU{} thermal recovered: {}", g.index, crate::units::temp(temp)));
-            let e = self.thermal_throttle.entry(g.index).or_default().step(o.now, throttled, cfg.thermal_secs, cfg.cooldown_secs);
-            push_edge(out, e, o.now, &format!("thermal_throttle:gpu{}", g.index), Severity::Warn,
-                format!("GPU{} thermal slowdown active ({}) for {}, {}", g.index, throttle_flags(g.throttle_mask).join("+"), fmt_duration(cfg.thermal_secs), crate::units::temp(temp)),
-                format!("GPU{} thermal slowdown cleared", g.index));
+            let e = self.thermal_temp.entry(g.index).or_default().step(
+                o.now,
+                hot,
+                cfg.thermal_secs,
+                cfg.cooldown_secs,
+            );
+            push_edge(
+                out,
+                e,
+                o.now,
+                &format!("thermal_temp:gpu{}", g.index),
+                Severity::Warn,
+                format!(
+                    "GPU{} at {}, >= {} for {}",
+                    g.index,
+                    crate::units::temp(temp),
+                    crate::units::temp(cfg.thermal_temp_c),
+                    fmt_duration(cfg.thermal_secs)
+                ),
+                format!(
+                    "GPU{} thermal recovered: {}",
+                    g.index,
+                    crate::units::temp(temp)
+                ),
+            );
+            let e = self.thermal_throttle.entry(g.index).or_default().step(
+                o.now,
+                throttled,
+                cfg.thermal_secs,
+                cfg.cooldown_secs,
+            );
+            push_edge(
+                out,
+                e,
+                o.now,
+                &format!("thermal_throttle:gpu{}", g.index),
+                Severity::Warn,
+                format!(
+                    "GPU{} thermal slowdown active ({}) for {}, {}",
+                    g.index,
+                    throttle_flags(g.throttle_mask).join("+"),
+                    fmt_duration(cfg.thermal_secs),
+                    crate::units::temp(temp)
+                ),
+                format!("GPU{} thermal slowdown cleared", g.index),
+            );
         }
 
-        if self.digest.window_start.is_some_and(|s| o.now - s >= DIGEST_PERIOD_SECS) {
+        if self
+            .digest
+            .window_start
+            .is_some_and(|s| o.now - s >= DIGEST_PERIOD_SECS)
+        {
             let lines: Vec<String> = self
                 .digest
                 .gpus
                 .iter()
                 .filter(|(_, d)| d.hot_secs > 0 || d.throttled_secs > 0)
-                .map(|(i, d)| format!("GPU{i} max {}, {} at >= {}, {} thermally throttled",
-                    crate::units::temp(d.max_temp_c), fmt_duration(d.hot_secs), crate::units::temp(cfg.thermal_temp_c), fmt_duration(d.throttled_secs)))
+                .map(|(i, d)| {
+                    format!(
+                        "GPU{i} max {}, {} at >= {}, {} thermally throttled",
+                        crate::units::temp(d.max_temp_c),
+                        fmt_duration(d.hot_secs),
+                        crate::units::temp(cfg.thermal_temp_c),
+                        fmt_duration(d.throttled_secs)
+                    )
+                })
                 .collect();
             if !lines.is_empty() {
-                out.push(alert(o.now, "thermal_digest", Severity::Info, false,
-                    format!("daily thermal digest (excluded from alerts): {}", lines.join("; "))));
+                out.push(alert(
+                    o.now,
+                    "thermal_digest",
+                    Severity::Info,
+                    false,
+                    format!(
+                        "daily thermal digest (excluded from alerts): {}",
+                        lines.join("; ")
+                    ),
+                ));
             }
             self.digest.gpus.clear();
             self.digest.window_start = Some(o.now);
@@ -942,11 +1476,21 @@ impl Engine {
                         self.c1.low_probes.push((ts, v));
                     }
                     let n = self.c1.low_probes.len();
-                    let cooled = self.c1.last_sent.is_none_or(|t| o.now - t >= cfg.cooldown_secs);
+                    let cooled = self
+                        .c1
+                        .last_sent
+                        .is_none_or(|t| o.now - t >= cfg.cooldown_secs);
                     if n >= cfg.c1_consecutive as usize && !self.c1.announced && cooled {
                         self.c1.announced = true;
                         self.c1.last_sent = Some(o.now);
-                        let used: Vec<String> = self.c1.low_probes.iter().map(|(t, v)| format!("{} {v:.1}", crate::timeutil::fmt_utc(*t, "%H:%M:%SZ"))).collect();
+                        let used: Vec<String> = self
+                            .c1
+                            .low_probes
+                            .iter()
+                            .map(|(t, v)| {
+                                format!("{} {v:.1}", crate::timeutil::fmt_utc(*t, "%H:%M:%SZ"))
+                            })
+                            .collect();
                         out.push(alert(o.now, "c1_decode", Severity::Warn, false,
                             format!("C1 decode {v:.1} tok/s, below {floor:.1} ({:.0}% of baseline {baseline:.1}) on {n} consecutive valid idle probes (probes {})",
                                 cfg.c1_ratio * 100.0, used.join(", "))));
@@ -954,8 +1498,13 @@ impl Engine {
                 } else {
                     self.c1.low_probes.clear();
                     if std::mem::take(&mut self.c1.announced) {
-                        out.push(alert(o.now, "c1_decode", Severity::Warn, true,
-                            format!("C1 decode recovered: {v:.1} tok/s (baseline {baseline:.1})")));
+                        out.push(alert(
+                            o.now,
+                            "c1_decode",
+                            Severity::Warn,
+                            true,
+                            format!("C1 decode recovered: {v:.1} tok/s (baseline {baseline:.1})"),
+                        ));
                     }
                 }
             } else {
@@ -993,19 +1542,41 @@ impl Engine {
         // seeded to "now" on the very first tick ever evaluated: a grace period while the
         // collector is still warming up, never an alarm the instant it starts
         let last = *self.c1.last_valid_ts.get_or_insert(o.now);
-        let threshold = o.probe_interval_secs.max(1) * i64::from(cfg.c1_stale_probe_intervals.max(1));
+        let threshold =
+            o.probe_interval_secs.max(1) * i64::from(cfg.c1_stale_probe_intervals.max(1));
         let stale_for = o.now - last;
         let was_stale_for = self.c1.stale.held_for(o.now);
-        let edge = self.c1.stale.step(o.now, stale_for >= threshold, C1_STALE_FIRE_HOLD_SECS, cfg.cooldown_secs);
+        let edge = self.c1.stale.step(
+            o.now,
+            stale_for >= threshold,
+            C1_STALE_FIRE_HOLD_SECS,
+            cfg.cooldown_secs,
+        );
         if edge == Edge::Recover {
             self.c1.stale_flaps.note_flap(o.now);
         }
         let muted = self.c1.stale_flaps.muted(o.now);
         match edge {
-            Edge::Fire if !muted => out.push(alert(o.now, "c1_stale", Severity::Info, false,
-                format!("C1 has not been able to measure for {} - the server has been busy", fmt_duration(stale_for)))),
-            Edge::Recover if !muted => out.push(alert(o.now, "c1_stale", Severity::Info, true,
-                format!("C1 is measuring again after {} unable to get a valid reading", fmt_duration(was_stale_for)))),
+            Edge::Fire if !muted => out.push(alert(
+                o.now,
+                "c1_stale",
+                Severity::Info,
+                false,
+                format!(
+                    "C1 has not been able to measure for {} - the server has been busy",
+                    fmt_duration(stale_for)
+                ),
+            )),
+            Edge::Recover if !muted => out.push(alert(
+                o.now,
+                "c1_stale",
+                Severity::Info,
+                true,
+                format!(
+                    "C1 is measuring again after {} unable to get a valid reading",
+                    fmt_duration(was_stale_for)
+                ),
+            )),
             _ => {}
         }
         if muted && !self.c1.stale_flaps.muted_announced {
@@ -1019,7 +1590,10 @@ impl Engine {
     }
 
     fn eval_rejects(&mut self, cfg: &RulesConfig, o: &Observation, out: &mut Vec<AlertEvent>) {
-        for (code, value, win) in [(413, o.rejected_413, &mut self.rejects_413), (429, o.rejected_429, &mut self.rejects_429)] {
+        for (code, value, win) in [
+            (413, o.rejected_413, &mut self.rejects_413),
+            (429, o.rejected_429, &mut self.rejects_429),
+        ] {
             let Some(value) = value else { continue };
             let growth = win.push(o.now, value, cfg.reject_window_secs);
             if code == 413 {
@@ -1027,20 +1601,53 @@ impl Engine {
             } else {
                 self.last.growth_429 = Some(growth);
             }
-            let e = win.rule.step(o.now, growth > cfg.reject_growth, 0, cfg.cooldown_secs);
-            push_edge(out, e, o.now, &format!("rejects_{code}"), Severity::Info,
-                format!("gate rejected_{code} grew by {growth} in {} (> {})", fmt_duration(cfg.reject_window_secs), cfg.reject_growth),
-                format!("gate rejected_{code} growth back to normal ({growth} in {})", fmt_duration(cfg.reject_window_secs)));
+            let e = win
+                .rule
+                .step(o.now, growth > cfg.reject_growth, 0, cfg.cooldown_secs);
+            push_edge(
+                out,
+                e,
+                o.now,
+                &format!("rejects_{code}"),
+                Severity::Info,
+                format!(
+                    "gate rejected_{code} grew by {growth} in {} (> {})",
+                    fmt_duration(cfg.reject_window_secs),
+                    cfg.reject_growth
+                ),
+                format!(
+                    "gate rejected_{code} growth back to normal ({growth} in {})",
+                    fmt_duration(cfg.reject_window_secs)
+                ),
+            );
         }
     }
 }
 
 fn alert(ts: i64, rule: &str, severity: Severity, recovered: bool, message: String) -> AlertEvent {
-    let message = if recovered { format!("RECOVERED: {message}") } else { message };
-    AlertEvent { ts, rule: rule.to_string(), severity, message, recovered }
+    let message = if recovered {
+        format!("RECOVERED: {message}")
+    } else {
+        message
+    };
+    AlertEvent {
+        ts,
+        rule: rule.to_string(),
+        severity,
+        message,
+        recovered,
+    }
 }
 
-fn push_edge(out: &mut Vec<AlertEvent>, e: Edge, now: i64, rule: &str, sev: Severity, fire: String, recover: String) {
+fn push_edge(
+    out: &mut Vec<AlertEvent>,
+    e: Edge,
+    now: i64,
+    rule: &str,
+    sev: Severity,
+    fire: String,
+    recover: String,
+) {
     match e {
         Edge::Fire => out.push(alert(now, rule, sev, false, fire)),
         Edge::Recover => out.push(alert(now, rule, sev, true, recover)),
@@ -1055,5 +1662,9 @@ pub fn median(values: &[f64]) -> f64 {
     }
     v.sort_by(f64::total_cmp);
     let mid = v.len() / 2;
-    if v.len() % 2 == 1 { v[mid] } else { (v[mid - 1] + v[mid]) / 2.0 }
+    if v.len() % 2 == 1 {
+        v[mid]
+    } else {
+        (v[mid - 1] + v[mid]) / 2.0
+    }
 }

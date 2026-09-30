@@ -447,21 +447,6 @@ impl Poller {
                     return (serve_name, Vec::new());
                 }
                 let states = cmd::run(&self.g_docker, "docker", &args, SOURCE_TIMEOUT).map(|o| parse_inspect(&o.stdout)).unwrap_or_default();
-                // card #414: a test (or a machine whose serve is a plain process with no docker)
-                // pins the serve container's START TIME over HTTP: `http://<engine>/docker/<name>/started_at`
-                // answers the unix start time as a decimal string, and the synthetic ContainerState
-                // rides in with the real ones - the refresh gate's container-start-time key is
-                // then driven by the REAL decision code (tests/slots_refresh.rs) with no docker.
-                let over_http = (serve_name.is_some() && states.is_empty())
-                    .then(|| {
-                        let path = format!("/docker/{}/started_at", serve_name.clone().unwrap_or_default());
-                        let agent2 = agent.clone();
-                        let base2 = cfg.sglang_url.trim_end_matches('/').to_string();
-                        http_get(&agent2, &format!("{base2}{path}")).ok().and_then(|b| b.trim().parse::<i64>().ok())
-                    })
-                    .flatten()
-                    .filter(|t| *t > 0);
-                let states = over_http.map_or(states, |started| vec![ContainerState { name: serve_name.clone().unwrap_or_default(), status: "running".into(), restart_count: 0, started_at: started }]);
                 (serve_name, states)
             });
             let logs = s.spawn(|| -> Option<(LogDelta, Option<String>)> {

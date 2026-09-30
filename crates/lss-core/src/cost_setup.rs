@@ -7,7 +7,9 @@
 //!      from the EMBEDDED, DATED EIA table in `cost_tables.rs` (no network, ever);
 //!   2. the caller's IP -> a geolocation service's answer (parsed here, fetched elsewhere, only
 //!      after explicit consent) -> the same state table;
-//!   3. a $/kWh typed by hand.
+//!   3. a $/kWh typed by hand;
+//!   4. (card #516) outside the US: the price per kWh typed in the person's own currency, with
+//!      the country and currency recorded beside it (`country_rates`).
 //!
 //! A state average is honest about being an average: its label says "avg" and names the EIA
 //! month, and the written file says in words that a real bill (and any time-of-use plan) beats it.
@@ -237,6 +239,15 @@ pub enum RateOrigin {
     StateAverage { code: &'static str, how: String },
     /// typed by hand
     Manual,
+    /// card #516: typed by hand for a country outside the US, in that country's currency (an
+    /// ISO-2 code or the name as typed; `currency` is `None` when the person left it blank)
+    ManualAbroad { country: String, currency: Option<String> },
+}
+
+/// The country an abroad rate was typed for, as a person reads it: "Germany" for `DE`, the code
+/// or name as typed when the table has no row for it.
+fn abroad_name(country: &str) -> &str {
+    crate::country_rates::place_name_country(country).unwrap_or(country)
 }
 
 /// The short label lss prints after "rate:" - e.g. `CA avg (EIA 2026-06)` / `entered by hand
@@ -245,6 +256,7 @@ pub fn source_label(origin: &RateOrigin, today: &str) -> String {
     match origin {
         RateOrigin::StateAverage { code, .. } => format!("{code} avg (EIA {EIA_MONTH})"),
         RateOrigin::Manual => format!("entered by hand ({today})"),
+        RateOrigin::ManualAbroad { country, .. } => format!("entered by hand, {} ({today})", abroad_name(country)),
     }
 }
 
@@ -261,6 +273,15 @@ pub fn render_rates_toml(usd_per_kwh: f64, origin: &RateOrigin, today: &str, too
             EIA_URL.to_string(),
         ),
         RateOrigin::Manual => ("Flat rate (entered by hand)".to_string(), today.to_string(), "typed by hand during setup".to_string(), String::new()),
+        RateOrigin::ManualAbroad { country, currency } => (
+            format!("Flat rate (entered by hand, {})", abroad_name(country)),
+            today.to_string(),
+            match currency {
+                Some(c) => format!("typed by hand during setup, from a bill in {}, in {c} per kWh - lss prints every cost with a $ sign; read it as {c}", abroad_name(country)),
+                None => format!("typed by hand during setup, from a bill in {}, in that bill's own currency per kWh - lss prints every cost with a $ sign; read it in that currency", abroad_name(country)),
+            },
+            String::new(),
+        ),
     };
     let mut o = String::new();
     o.push_str(&format!("# lss electricity cost - written by {tool} on {today}.\n"));
@@ -276,6 +297,12 @@ pub fn render_rates_toml(usd_per_kwh: f64, origin: &RateOrigin, today: &str, too
     o.push_str(&format!("source_detail = {}\n", toml_str(&detail)));
     if !url.is_empty() {
         o.push_str(&format!("source_url = {}\n", toml_str(&url)));
+    }
+    if let RateOrigin::ManualAbroad { country, currency } = origin {
+        o.push_str(&format!("country = {}\n", toml_str(country)));
+        if let Some(c) = currency {
+            o.push_str(&format!("currency = {}\n", toml_str(c)));
+        }
     }
     o.push_str("\n[plan]\nkind = \"flat\"\n");
     o.push_str(&format!("usd_per_kwh = {}\n", fmt_rate(usd_per_kwh)));
@@ -574,6 +601,30 @@ mod tests {
         assert_eq!(t.source.as_deref(), Some("entered by hand (2026-09-24)"));
         assert_eq!(t.effective_date, "2026-09-24");
         assert!(!text.contains("source_url"));
+        assert!(!text.contains("country"), "a plain manual rate records no country: {text}");
+    }
+
+    #[test]
+    fn an_abroad_rate_writes_its_country_and_currency_and_the_file_reads_back() {
+        let origin = RateOrigin::ManualAbroad { country: "DE".into(), currency: Some("EUR".into()) };
+        let text = render_rates_toml(0.25, &origin, "2026-09-24", "t");
+        let f = crate::rates::read_rates_file(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        assert_eq!(f.country.as_deref(), Some("DE"));
+        assert_eq!(f.currency.as_deref(), Some("EUR"));
+        assert_eq!(f.source.as_deref(), Some("entered by hand, Germany (2026-09-24)"));
+        assert_eq!(f.name, "Flat rate (entered by hand, Germany)");
+        assert!(f.source_detail.as_deref().unwrap_or("").contains("in EUR per kWh"), "{text}");
+        assert!(!text.contains("source_url"));
+        let t = parse_rates_file(&text).unwrap();
+        assert_eq!(t.price_for(crate::rates::DayContext { hour: 3, is_summer: false, is_weekend_or_holiday: true }), Some((0.25, "flat")));
+
+        let origin = RateOrigin::ManualAbroad { country: "Bolivia".into(), currency: None };
+        let text = render_rates_toml(0.9, &origin, "2026-09-24", "t");
+        let f = crate::rates::read_rates_file(&text).unwrap();
+        assert_eq!(f.country.as_deref(), Some("Bolivia"));
+        assert_eq!(f.currency, None);
+        assert!(!text.contains("currency ="), "{text}");
+        assert_eq!(source_label(&origin, "2026-09-24"), "entered by hand, Bolivia (2026-09-24)");
     }
 
     #[test]

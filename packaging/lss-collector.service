@@ -6,7 +6,7 @@
 # membership of `adm` (kernel journal, for Xids) and `docker`.
 [Unit]
 Description=LLM SERVER STATUS collector (metrics, GPUs, incidents, alerts, C1 probe)
-After=network-online.target docker.service tailscaled.service
+After=network-online.target docker.service
 StartLimitIntervalSec=0
 
 [Service]

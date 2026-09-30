@@ -522,6 +522,14 @@ fn page_shot(page: PageId, range: &str, json: bool, url: &str) -> i32 {
         Ok(s) => s,
         Err(e) => return unreachable(json, &e),
     };
+    // card #513: the one-shot CLI honours the same visibility as the screen - with no gateway,
+    // `lss users` / `lss gateway` have nothing to show that the overview does not already say
+    // (one plain line, no errors), so they print the plain status and nothing else. The screen's
+    // own keypresses never open the page, so this path only matters for someone typing the
+    // command.
+    if !PageId::visible_pages(status.gate.absent).contains(&page) {
+        return one_shot("status", json, url);
+    }
     let ctx = data::PageCtx::of(&status);
     if json {
         // the collector's own documents, verbatim, keyed by what they are

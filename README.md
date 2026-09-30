@@ -4,6 +4,16 @@ A terminal monitor for **your own LLM server**. One small collector runs on the 
 serves the model; `lss`, a full-screen terminal view plus a plain-text / JSON CLI, runs on any
 machine that can reach it. No Grafana, no Prometheus, no browser, no account, no cloud.
 
+## Quickstart
+
+```bash
+curl -fsSL https://github.com/kachowtowmater/lss/releases/latest/download/install.sh | bash
+lss setup
+lss
+```
+
+![lss --demo](docs/img/lss-demo.svg)
+
 It answers, in plain words:
 
 * **What is worst right now, and what does it cost me?** One line at the top names the current
@@ -20,6 +30,7 @@ It answers, in plain words:
   comparison with the model before.
 * **What went wrong, and when?** alerts that fire and clear, and a dated record of incidents:
   outages, restarts, GPU Xid errors.
+
 
 ## What it needs
 
@@ -104,6 +115,22 @@ setup-wizard flag below. `./install.sh --help` lists them all.
 What each engine publishes, and so which numbers read `n/a (not reported by <engine>)` instead of
 a made-up zero, is in **[docs/ENGINES.md](docs/ENGINES.md)**.
 
+## Server on another machine
+
+The wizard scans this machine only. When the engine runs on another box (the GPU server on your
+LAN), install lss here anyway: at `Which one should lss watch?` answer `r` (`r = the server is on
+another machine`); when nothing answered here it asks for the address straight away. Type it as
+`host:port` (e.g. `192.0.2.20:8000`), pick the engine (`0` = recognise it) and its API key if it
+has one. The address is tested live before anything is written: one that refuses, times out or is
+not an LLM server is explained in one plain line and asked again (`e = change the address or
+key`) - it is never written silently, and with no one to ask the wizard stops with nothing written.
+
+Once it answers, the wizard says what this split shows: the collector on this machine reads the
+engine's speed, queue and cache over HTTP, but **GPU temperature, power and memory, Docker restarts
+and the kernel Xid log need the collector ON the GPU box**. Install it there with the same
+one-liner, `curl -fsSL https://github.com/kachowtowmater/lss/releases/latest/download/install.sh | bash`,
+then read that collector from here (*Point it at YOUR machine*, below).
+
 ## Setup wizard (`lss setup`)
 
 The installer runs it for you. Run it again any time, for example to point lss at another engine:
@@ -129,6 +156,8 @@ one blank line are left out. Every other line is as printed:
    [ok] metrics: vLLM publishes 5 of the 16 numbers lss shows (the rest read 'n/a' - docs/ENGINES.md says which and why)
 
 == 3/5  Electricity cost (optional)
+
+Your country (2-letter code or name; blank = US) [US]:
 
 Electricity cost - how should lss price the power your GPUs draw?
   1) my ZIP code       - my state's average home rate (U.S. EIA, 2026-06); nothing is sent anywhere
@@ -203,7 +232,11 @@ switch between them, a FLEET line shows every one, and `f` opens a page with one
 ## Set up YOUR electricity rates
 
 Cost is **off until you give it a rate**. lss never guesses one. The setup wizard asks, and you can
-re-run just this step with `lss-collector cost-setup`. There are four ways to answer:
+re-run just this step with `lss-collector cost-setup`. It asks your **country first**: blank or
+`US` gets the four choices below; any other country skips the US-only averages and asks for the
+price per kWh from your bill, in your own currency (`0.25` for 25 cents - no cents guessing, so `31`
+is 31 yen), and records the country and currency in the file (`country = "DE"`, `currency = "EUR"`;
+lss still prints a `$` sign - the number is what you typed). In the US there are four ways to answer:
 
 | choice | what it does | network |
 |---|---|---|

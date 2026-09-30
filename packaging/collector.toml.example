@@ -83,6 +83,9 @@ disk_warn_pct = 90.0
 disk_page_pct = 97.0
 disk_secs = 60                         # ... held this long; recovers disk_recover_margin_pct points below its line
 disk_recover_margin_pct = 2.0
+disk_growth_gb = 100.0                 # also warn when avail falls by this many GB ...
+disk_growth_secs = 600                 # ... within this window, wherever the % level sits - a fast fill
+                                       # (card #450: a run-away build or a runaway log never reaches 90%)
 c1_ratio = 0.8                         # C1 alert when decode < c1_ratio x baseline ...
 c1_consecutive = 3                     # ... on this many idle probes in a row
 # c1_baseline_tok_s = 190.0            # unset = median of the first c1_baseline_probes probes
@@ -97,6 +100,13 @@ discount_inert_secs = 600              # warm cache + traffic + ZERO discounts f
                                        # the same fault with nothing raising anywhere
 discount_min_admissions = 50           # ... and only once the gate has seen this many recent admissions,
                                        # so a quiet box never reads as broken
+
+# OPT-IN: watch the agent harness omp's own config on THIS box (never written) for a
+# modelRoles.default naming a model this provider no longer serves (card #36's incident: omp
+# fell back to an outside provider without a word). Unset/empty = OFF, the default - a box
+# without omp, or without lss's own agent tool, watches nothing.
+# omp_config_path = "~/.omp/agent/config.yml"
+                                       # "~" expands to $HOME; held omp_mismatch_hold_secs
 
 # The service levels YOU want. The overview shows how much of the last 24 h met each one, the
 # MODEL page too, and ADVICE says when one is missed. 0 switches a target off.

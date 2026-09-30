@@ -47,7 +47,9 @@
 #      LSS_TEST_TZ2  second pass (default Asia/Kolkata; set it EMPTY to run one pass only)
 # Each pass runs `cargo test --workspace --no-fail-fast` (card #425): one red binary no longer
 # hides the later ones - every binary's tests run in both passes, and cargo still exits nonzero
-# when anything failed, so a failing pass still fails the command (set -e is on).
+# when anything failed, so a failing pass still fails the command. Both passes ALWAYS run (card
+# #444): each pass's exit code is collected and the loop fails at the END, so a red first pass
+# never hides the second's results.
 # Both passes must be green. Each prints the zone and the container's own `date` first, so a green
 # run can never be mistaken for one that quietly ran in UTC.
 #
@@ -267,11 +269,14 @@ TEST_TZ2="${LSS_TEST_TZ2-Asia/Kolkata}"
 case "$CMD" in
   # card #232: one pass per timezone, and the zone is ANNOUNCED - a suite that passes because the
   # box was UTC is the failure this exists to stop, so "which zone was that?" must never be a
-  # question the output leaves open. Any pass failing fails the command (set -e is on).
-  test)   for _tz in "$TEST_TZ" ${TEST_TZ2:+"$TEST_TZ2"}; do
+  # question the output leaves open. Both passes ALWAYS run (card #444): each pass's exit code is
+  # collected, and the loop fails at the END, so a red first pass never hides the second's results.
+  test)   rc=0
+          for _tz in "$TEST_TZ" ${TEST_TZ2:+"$TEST_TZ2"}; do
             echo "=== cargo test --workspace under TZ=$_tz"
-            run "date && cargo test --workspace --no-fail-fast 2>&1" "-e TZ=$_tz"
-          done ;;
+            run "date && cargo test --workspace --no-fail-fast 2>&1" "-e TZ=$_tz" || { r=$?; [ "$rc" -eq 0 ] && rc=$r; }
+          done
+          [ "$rc" -eq 0 ] || exit "$rc" ;;
   # `rust:latest` ships WITHOUT clippy: install it when it is missing, so "clippy clean" can never
   # be a step that silently did not run (the last line printed is clippy's own version)
   clippy) run "(cargo clippy --version >/dev/null 2>&1 || rustup component add clippy >/dev/null 2>&1) && cargo clippy --workspace --all-targets -- -D warnings 2>&1 && cargo clippy --version" ;;

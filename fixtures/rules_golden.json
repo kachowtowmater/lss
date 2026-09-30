@@ -113,6 +113,16 @@
       "cooldown_remaining_s": 0
     },
     {
+      "rule": "disk_growth",
+      "severity": "warn",
+      "state": "ok",
+      "threshold": "/ loses >= 100 GB free within 10m00s (recovers when the drop over the window falls back under)",
+      "value": "no reading",
+      "pending_since": null,
+      "last_fired": null,
+      "cooldown_remaining_s": 0
+    },
+    {
       "rule": "thermal_temp:gpu0",
       "severity": "warn",
       "state": "ok",

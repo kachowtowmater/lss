@@ -98,7 +98,9 @@ pub struct RatesSection {
 
 impl Default for RatesSection {
     fn default() -> Self {
-        Self { path: "~/.config/lss/rates.toml".into() }
+        Self {
+            path: "~/.config/lss/rates.toml".into(),
+        }
     }
 }
 
@@ -116,7 +118,9 @@ pub struct WatchSection {
 
 impl Default for WatchSection {
     fn default() -> Self {
-        Self { path: "~/.config/lss/watch.json".into() }
+        Self {
+            path: "~/.config/lss/watch.json".into(),
+        }
     }
 }
 
@@ -165,7 +169,11 @@ impl Config {
     /// Where the probe and the bench's own requests go: through the gateway when there is
     /// one (it stamps and accounts for them), else straight to the engine.
     pub fn chat_base(&self) -> &str {
-        if self.has_gate() { self.gate_url.trim_end_matches('/') } else { self.sglang_url.trim_end_matches('/') }
+        if self.has_gate() {
+            self.gate_url.trim_end_matches('/')
+        } else {
+            self.sglang_url.trim_end_matches('/')
+        }
     }
     /// The engine URL still has to be found on this machine.
     pub fn engine_is_auto(&self) -> bool {
@@ -173,26 +181,44 @@ impl Config {
     }
     /// The API key the first `[[engine]]` block names ("" = none).
     pub fn pinned_api_key(&self) -> String {
-        self.engines.first().map(|e| e.api_key.trim().to_string()).unwrap_or_default()
+        self.engines
+            .first()
+            .map(|e| e.api_key.trim().to_string())
+            .unwrap_or_default()
     }
     /// The pinned engine, if the config names one: (kind or None for auto, url).
     pub fn pinned_engine(&self) -> Option<(Option<crate::engine::EngineKind>, String)> {
         if let Some(e) = self.engines.first() {
-            return Some((crate::engine::EngineKind::parse(&e.kind), e.url.trim_end_matches('/').to_string()));
+            return Some((
+                crate::engine::EngineKind::parse(&e.kind),
+                e.url.trim_end_matches('/').to_string(),
+            ));
         }
-        (!self.engine_is_auto()).then(|| (crate::engine::EngineKind::parse(&self.engine_kind), self.sglang_url.trim_end_matches('/').to_string()))
+        (!self.engine_is_auto()).then(|| {
+            (
+                crate::engine::EngineKind::parse(&self.engine_kind),
+                self.sglang_url.trim_end_matches('/').to_string(),
+            )
+        })
     }
     /// card #308: whether https certificates are checked for the engine this collector watches:
     /// the pinned `[[engine]]` block's own `tls_verify` when it has one, else the top-level key.
     pub fn engine_tls_verify(&self) -> bool {
-        self.engines.first().and_then(|e| e.tls_verify).unwrap_or(self.tls_verify)
+        self.engines
+            .first()
+            .and_then(|e| e.tls_verify)
+            .unwrap_or(self.tls_verify)
     }
     /// The port the serve container publishes: `serve_port`, else the port of the engine URL.
     pub fn serve_port_or_url(&self) -> u16 {
         if self.serve_port != 0 {
             return self.serve_port;
         }
-        self.sglang_url.rsplit(':').next().and_then(|p| p.trim_end_matches('/').parse().ok()).unwrap_or(0)
+        self.sglang_url
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.trim_end_matches('/').parse().ok())
+            .unwrap_or(0)
     }
 }
 
@@ -292,10 +318,12 @@ pub struct RulesConfig {
     pub reject_window_secs: i64,
     /// Seconds a restarted container must stay up before the "recovered" message.
     pub restart_stable_secs: i64,
-    /// #36, 2026-09-21: omp's shared config on THIS box, watched (never written - re-pointing it
-    /// is the operator's own job) for `modelRoles.default` naming a model this
-    /// provider no longer serves. "~" expands to $HOME. "" = do not watch it (a box with no
-    /// omp installed, or where this check is not wanted) - never an error, just silent.
+    /// #36, 2026-09-21; #514, 2026-09-29: OPT-IN. omp's shared config on THIS box, watched
+    /// (never written - re-pointing it is the operator's own job) for `modelRoles.default`
+    /// naming a model this provider no longer serves. lss ships to boxes without omp, and its
+    /// own agent tool's config is nobody else's business: nothing is watched unless this names
+    /// a path. "~" expands to $HOME. "" = do not watch it (the default - a box with no omp
+    /// installed, or where this check is not wanted) - never an error, just silent.
     pub omp_config_path: String,
     /// A mismatch must hold this long before it alerts - the few seconds a swap takes to land
     /// in both the served model and (once run) the sync script must never look like a fault.
@@ -327,6 +355,11 @@ pub struct RulesConfig {
     pub disk_page_pct: f64,
     pub disk_secs: i64,
     pub disk_recover_margin_pct: f64,
+    /// card #450: a fast fill that never reaches 90% - avail_bytes falling by this many GB
+    /// within the window, wherever the % level sits (the %-used rules above watch the LEVEL,
+    /// this one watches the SLOPE).
+    pub disk_growth_gb: f64,
+    pub disk_growth_secs: i64,
 }
 
 impl Default for RulesConfig {
@@ -352,7 +385,7 @@ impl Default for RulesConfig {
             reject_growth: 20,
             reject_window_secs: 600,
             restart_stable_secs: 120,
-            omp_config_path: "~/.omp/agent/config.yml".into(),
+            omp_config_path: String::new(),
             omp_mismatch_hold_secs: 600,
             charge_errors_secs: 60,
             discount_inert_secs: 600,
@@ -368,6 +401,10 @@ impl Default for RulesConfig {
             disk_page_pct: 97.0,
             disk_secs: 60,
             disk_recover_margin_pct: 2.0,
+            // card #450: 100 GB gone in 10 min is a run-away build or a runaway log, not a
+            // trend; the %-used rules catch the level, this catches the pace.
+            disk_growth_gb: 100.0,
+            disk_growth_secs: 600,
         }
     }
 }
@@ -519,14 +556,43 @@ pub struct ServerEntry {
 /// URL's host. A single-server setup gives exactly one entry and nothing extra is drawn.
 pub fn servers(flag: Option<&str>, env: Option<&str>, cfg: &ClientConfig) -> Vec<(String, String)> {
     let clean = |u: &str| u.trim().trim_end_matches('/').to_string();
-    let host_of = |u: &str| u.split("://").nth(1).unwrap_or(u).split(['/', ':']).next().unwrap_or("").to_string();
-    let explicit = [flag, env].into_iter().flatten().map(str::trim).find(|u| !u.is_empty());
-    let listed: Vec<(String, String)> = cfg.server.iter().filter(|s| !s.url.trim().is_empty()).map(|s| (if s.name.trim().is_empty() { host_of(&s.url) } else { s.name.trim().to_string() }, clean(&s.url))).collect();
+    let host_of = |u: &str| {
+        u.split("://")
+            .nth(1)
+            .unwrap_or(u)
+            .split(['/', ':'])
+            .next()
+            .unwrap_or("")
+            .to_string()
+    };
+    let explicit = [flag, env]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|u| !u.is_empty());
+    let listed: Vec<(String, String)> = cfg
+        .server
+        .iter()
+        .filter(|s| !s.url.trim().is_empty())
+        .map(|s| {
+            (
+                if s.name.trim().is_empty() {
+                    host_of(&s.url)
+                } else {
+                    s.name.trim().to_string()
+                },
+                clean(&s.url),
+            )
+        })
+        .collect();
     match explicit {
         Some(u) => {
             // a listed server keeps its name when it is the one asked for
             let url = clean(u);
-            vec![listed.into_iter().find(|(_, l)| *l == url).unwrap_or_else(|| (host_of(&url), url))]
+            vec![listed
+                .into_iter()
+                .find(|(_, l)| *l == url)
+                .unwrap_or_else(|| (host_of(&url), url))]
         }
         None if listed.is_empty() => {
             let url = resolve_url(None, None, cfg);
@@ -539,7 +605,15 @@ pub fn servers(flag: Option<&str>, env: Option<&str>, cfg: &ClientConfig) -> Vec
 /// `--server NAME|N` picks one of `servers` (1-based number, or a name, case-insensitive).
 pub fn pick_server(servers: &[(String, String)], sel: &str) -> Option<usize> {
     let sel = sel.trim();
-    sel.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).filter(|i| *i < servers.len()).or_else(|| servers.iter().position(|(n, _)| n.eq_ignore_ascii_case(sel)))
+    sel.parse::<usize>()
+        .ok()
+        .and_then(|n| n.checked_sub(1))
+        .filter(|i| *i < servers.len())
+        .or_else(|| {
+            servers
+                .iter()
+                .position(|(n, _)| n.eq_ignore_ascii_case(sel))
+        })
 }
 
 pub const DEFAULT_COLLECTOR_URL: &str = "http://127.0.0.1:8099";
@@ -550,7 +624,14 @@ pub fn parse_client_config(text: &str) -> Result<ClientConfig, String> {
 
 /// Which collector to talk to: `--url`, then `$LSS_URL`, then `lss.toml`, then this machine.
 pub fn resolve_url(flag: Option<&str>, env: Option<&str>, cfg: &ClientConfig) -> String {
-    [flag, env, Some(cfg.url.as_str())].into_iter().flatten().map(str::trim).find(|u| !u.is_empty()).unwrap_or(DEFAULT_COLLECTOR_URL).trim_end_matches('/').to_string()
+    [flag, env, Some(cfg.url.as_str())]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|u| !u.is_empty())
+        .unwrap_or(DEFAULT_COLLECTOR_URL)
+        .trim_end_matches('/')
+        .to_string()
 }
 
 pub fn parse_config(text: &str) -> Result<Config, String> {
@@ -574,68 +655,163 @@ mod tests {
     fn empty_file_is_all_defaults() {
         let c = parse_config("").unwrap();
         assert_eq!(c, Config::default());
-        assert!(c.rules.thermal_exclude.is_empty(), "no GPU is special in a generic install");
-        assert!(c.host.is_empty() && c.listen == vec!["127.0.0.1:8099"] && !c.tailscale_lookup && c.user_alias.is_empty(), "nothing site-specific in the defaults");
-        assert_eq!(c.rules.c1_ratio, 0.8, "0.8 is the one default: README, RUNBOOK, the example file and the TUI follow it");
+        assert!(
+            c.rules.thermal_exclude.is_empty(),
+            "no GPU is special in a generic install"
+        );
+        assert!(
+            c.host.is_empty()
+                && c.listen == vec!["127.0.0.1:8099"]
+                && !c.tailscale_lookup
+                && c.user_alias.is_empty(),
+            "nothing site-specific in the defaults"
+        );
+        assert_eq!(
+            c.rules.c1_ratio, 0.8,
+            "0.8 is the one default: README, RUNBOOK, the example file and the TUI follow it"
+        );
         assert_eq!(c.alert_flush_secs, 300);
     }
 
     #[test]
     fn partial_override_and_typo_detection() {
         let c = parse_config("poll_secs = 10\n[rules]\nthermal_exclude = [0, 2]\nc1_baseline_tok_s = 190.0\n[[user_alias]]\nip = \"192.0.2.76\"\nname = \"laptop\"\n[[user_alias]]\nip = \"192.0.2.77\"\nname = \"seat\"\n").unwrap();
-        assert_eq!((c.user_alias.len(), c.user_alias[1].name.as_str()), (2, "seat"));
+        assert_eq!(
+            (c.user_alias.len(), c.user_alias[1].name.as_str()),
+            (2, "seat")
+        );
         assert_eq!(c.poll_secs, 10);
         assert_eq!(c.rules.thermal_exclude, vec![0, 2]);
         assert_eq!(c.rules.c1_baseline_tok_s, Some(190.0));
         assert_eq!(c.rules.cooldown_secs, 1800);
-        assert!(parse_config("pol_secs = 10").is_err(), "unknown keys are rejected, not ignored");
+        assert!(
+            parse_config("pol_secs = 10").is_err(),
+            "unknown keys are rejected, not ignored"
+        );
     }
 
     #[test]
     fn the_shipped_example_config_parses_to_the_defaults() {
         let c = parse_config(include_str!("../../../packaging/collector.toml.example")).unwrap();
-        assert_eq!(c, Config::default(), "packaging/collector.toml.example must document the real defaults");
+        assert_eq!(
+            c,
+            Config::default(),
+            "packaging/collector.toml.example must document the real defaults"
+        );
     }
 
     #[test]
     fn the_client_config_picks_the_collector_flag_then_env_then_file_then_this_machine() {
         let none = ClientConfig::default();
-        assert_eq!(resolve_url(None, None, &none), "http://127.0.0.1:8099", "a generic install talks to itself");
-        let file = parse_client_config("url = \"http://gpu-box:8099/\"\ntheme = \"dark\"\nbench_ssh = \"gpu-box\"\n").unwrap();
-        assert_eq!((resolve_url(None, None, &file).as_str(), file.bench_ssh.as_str()), ("http://gpu-box:8099", "gpu-box"));
-        assert_eq!(resolve_url(None, Some("http://env:1"), &file), "http://env:1");
-        assert_eq!(resolve_url(Some("http://flag:2"), Some("http://env:1"), &file), "http://flag:2");
-        assert_eq!(resolve_url(None, Some("  "), &file), "http://gpu-box:8099", "an empty $LSS_URL is not a URL");
+        assert_eq!(
+            resolve_url(None, None, &none),
+            "http://127.0.0.1:8099",
+            "a generic install talks to itself"
+        );
+        let file = parse_client_config(
+            "url = \"http://gpu-box:8099/\"\ntheme = \"dark\"\nbench_ssh = \"gpu-box\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                resolve_url(None, None, &file).as_str(),
+                file.bench_ssh.as_str()
+            ),
+            ("http://gpu-box:8099", "gpu-box")
+        );
+        assert_eq!(
+            resolve_url(None, Some("http://env:1"), &file),
+            "http://env:1"
+        );
+        assert_eq!(
+            resolve_url(Some("http://flag:2"), Some("http://env:1"), &file),
+            "http://flag:2"
+        );
+        assert_eq!(
+            resolve_url(None, Some("  "), &file),
+            "http://gpu-box:8099",
+            "an empty $LSS_URL is not a URL"
+        );
         assert!(parse_client_config("ur = 1").is_err());
-        assert_eq!(parse_client_config(include_str!("../../../packaging/lss.toml.example")).unwrap(), ClientConfig::default(), "packaging/lss.toml.example documents the real defaults");
+        assert_eq!(
+            parse_client_config(include_str!("../../../packaging/lss.toml.example")).unwrap(),
+            ClientConfig::default(),
+            "packaging/lss.toml.example documents the real defaults"
+        );
     }
 
     #[test]
     fn several_servers_and_a_single_server_setup_behaves_as_before() {
         // nothing configured: this machine, one entry
-        assert_eq!(servers(None, None, &ClientConfig::default()), vec![("127.0.0.1".to_string(), "http://127.0.0.1:8099".to_string())]);
+        assert_eq!(
+            servers(None, None, &ClientConfig::default()),
+            vec![("127.0.0.1".to_string(), "http://127.0.0.1:8099".to_string())]
+        );
         // the classic single `url`
         let one = parse_client_config("url = \"http://gpu-box:8099/\"\n").unwrap();
-        assert_eq!(servers(None, None, &one), vec![("gpu-box".to_string(), "http://gpu-box:8099".to_string())]);
+        assert_eq!(
+            servers(None, None, &one),
+            vec![("gpu-box".to_string(), "http://gpu-box:8099".to_string())]
+        );
         // [[server]] entries: in file order, the first is where the screen starts
         let many = parse_client_config("url = \"http://ignored:1\"\n[[server]]\nname = \"big\"\nurl = \"http://192.0.2.10:8099\"\nbench_ssh = \"big\"\n[[server]]\nurl = \"http://spark-1:8099/\"\n[[server]]\nname = \"no url\"\n").unwrap();
         let list = servers(None, None, &many);
-        assert_eq!(list, vec![("big".to_string(), "http://192.0.2.10:8099".to_string()), ("spark-1".to_string(), "http://spark-1:8099".to_string())], "an entry without a URL is skipped; a missing name is the host");
+        assert_eq!(
+            list,
+            vec![
+                ("big".to_string(), "http://192.0.2.10:8099".to_string()),
+                ("spark-1".to_string(), "http://spark-1:8099".to_string())
+            ],
+            "an entry without a URL is skipped; a missing name is the host"
+        );
         // --url / $LSS_URL = exactly that server, and it keeps its configured name when listed
-        assert_eq!(servers(Some("http://192.0.2.10:8099/"), None, &many), vec![("big".to_string(), "http://192.0.2.10:8099".to_string())]);
-        assert_eq!(servers(None, Some("http://elsewhere:9"), &many), vec![("elsewhere".to_string(), "http://elsewhere:9".to_string())]);
-        assert_eq!((pick_server(&list, "2"), pick_server(&list, "BIG"), pick_server(&list, "0"), pick_server(&list, "3"), pick_server(&list, "nope")), (Some(1), Some(0), None, None, None));
-        assert!(parse_client_config("[[server]]\nnam = \"x\"\n").is_err(), "a typo inside [[server]] is an error too");
-        assert_eq!(parse_client_config("temp_units = \"f\"\n").unwrap().temp_units, "f");
+        assert_eq!(
+            servers(Some("http://192.0.2.10:8099/"), None, &many),
+            vec![("big".to_string(), "http://192.0.2.10:8099".to_string())]
+        );
+        assert_eq!(
+            servers(None, Some("http://elsewhere:9"), &many),
+            vec![("elsewhere".to_string(), "http://elsewhere:9".to_string())]
+        );
+        assert_eq!(
+            (
+                pick_server(&list, "2"),
+                pick_server(&list, "BIG"),
+                pick_server(&list, "0"),
+                pick_server(&list, "3"),
+                pick_server(&list, "nope")
+            ),
+            (Some(1), Some(0), None, None, None)
+        );
+        assert!(
+            parse_client_config("[[server]]\nnam = \"x\"\n").is_err(),
+            "a typo inside [[server]] is an error too"
+        );
+        assert_eq!(
+            parse_client_config("temp_units = \"f\"\n")
+                .unwrap()
+                .temp_units,
+            "f"
+        );
     }
 
     #[test]
     fn bench_and_advice_have_generic_defaults() {
         let c = Config::default();
-        assert!(c.bench.harness.is_empty() && c.bench.launcher.is_empty(), "no path of ours in the code");
+        assert!(
+            c.bench.harness.is_empty() && c.bench.launcher.is_empty(),
+            "no path of ours in the code"
+        );
         assert_eq!((c.bench.idle_secs, c.bench.poll_secs), (300, 2));
         let c = parse_config("[bench]\nharness = \"~/bench/llm_decode_bench.py\"\nlauncher = [\"systemd-run\", \"--user\", \"--scope\"]\n[advice]\nkv_low_pct = 25.0\n").unwrap();
-        assert_eq!((c.bench.launcher.len(), c.advice.kv_low_pct, c.advice.kv_act_pct), (3, 25.0, 95.0));
+        assert_eq!(
+            (
+                c.bench.launcher.len(),
+                c.advice.kv_low_pct,
+                c.advice.kv_act_pct
+            ),
+            (3, 25.0, 95.0)
+        );
         assert!(parse_config("[bench]\nharnes = \"x\"").is_err());
     }
 
