@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.1 (2026-09-29)
+
+- **#530: the README hero image renders in Safari/iPhone.** Rows of `docs/img/lss-demo.svg`
+  carry `textLength` (and `lengthAdjust="spacingAndGlyphs"`) so WebKit renders all 126 columns
+  instead of clipping them.
+
 ## v1.3.0 (2026-09-29)
 
 Plug-and-play. #512, #513, #514, #515, #516.
