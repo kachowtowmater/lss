@@ -19,8 +19,7 @@ use std::time::{Duration, Instant};
 /// /get_server_info answer, so a test can prove the collector ASKED (or never asked) - no
 /// assertion rides on a number the fake merely mirrored. `model` stands in for the served
 /// model id: the gate's other identity key (the container start time comes from the fake
-/// `docker` on PATH, not from the engine, card #443). `v1models_hits` counts /v1/models
-/// (the scrape asks it every poll).
+/// `docker` on PATH, not from the engine, card #443).
 struct SlotsEngine {
     port: u16,
     handle: Option<std::thread::JoinHandle<()>>,
@@ -28,28 +27,33 @@ struct SlotsEngine {
     broken: std::sync::Arc<AtomicU32>,
     info_hits: std::sync::Arc<AtomicU32>,
     model: Arc<AtomicU32>,
-    v1models_hits: Arc<AtomicU32>,
-    /// EVERY request the engine answered (any URL, /stop excluded) - the "no extra HTTP" proof
-    total_hits: Arc<AtomicU32>,
     /// card #443 r4: every path the engine answered, in order - the no-extra-HTTP test prints
     /// it in its assertion message so the extra per-poll request is NAMED, not just counted.
     paths: Arc<parking_lot::Mutex<Vec<String>>>,
+    /// card #523: index in `paths` just after the most recent /metrics answer - a POLL
+    /// BOUNDARY the engine thread itself records at answer time, so a test can slice the log
+    /// between two boundaries with no observer race (reading a counter races the next request).
+    metrics_boundary: Arc<AtomicU32>,
 }
 
 impl SlotsEngine {
-    /// Blocks until /v1/models has been answered `n` more times than `at` (None = now). Each
-    /// /v1/models answer is one poll's scrape, so the return value IS a poll count: a test
-    /// reads the counter at a poll boundary, not somewhere inside one. The whole box is the
-    /// status_when deadline (40 s) - a collector that stopped scraping fails here, loudly.
-    fn wait_v1models(&self, n: u32, at: Option<u32>) -> u32 {
-        let start = at.unwrap_or_else(|| self.v1models_hits.load(Ordering::Relaxed));
+    /// card #523: wait until the engine has recorded a poll boundary PAST `after` (None = its
+    /// current boundary), then return that boundary - the path-log index just after the
+    /// /metrics answer that ended the NEXT complete poll. The ENGINE THREAD stores the boundary
+    /// itself at answer time (the log index right after its own push), so the value can never
+    /// sit ahead of the log, and every entry below it belongs to a poll that has answered its
+    /// /metrics. A boundary is a log INDEX, not a poll count, so "n more polls" is n calls,
+    /// never `+ n`. The whole box is the status_when deadline (40 s) - a collector that stopped
+    /// polling fails here, loudly.
+    fn next_poll(&self, after: Option<u32>) -> u32 {
+        let start = after.unwrap_or_else(|| self.metrics_boundary.load(Ordering::Relaxed));
         let deadline = Instant::now() + Duration::from_secs(40);
         loop {
-            let now = self.v1models_hits.load(Ordering::Relaxed);
-            if now >= start + n {
+            let now = self.metrics_boundary.load(Ordering::Relaxed);
+            if now > start {
                 return now;
             }
-            assert!(Instant::now() < deadline, "the collector stopped scraping: /v1/models hits {start} -> {now} (wanted +{n})");
+            assert!(Instant::now() < deadline, "the collector stopped polling: /metrics boundary still {start} after 40 s");
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -65,11 +69,11 @@ impl SlotsEngine {
         let broken = Arc::new(AtomicU32::new(0));
         let info_hits = Arc::new(AtomicU32::new(0));
         let model = Arc::new(AtomicU32::new(0));
-        let v1models_hits = Arc::new(AtomicU32::new(0));
-        let total_hits = Arc::new(AtomicU32::new(0));
-        let (slots2, broken2, hits2, model2, vm2, total2) = (slots.clone(), broken.clone(), info_hits.clone(), model.clone(), v1models_hits.clone(), total_hits.clone());
+        let (slots2, broken2, hits2, model2) = (slots.clone(), broken.clone(), info_hits.clone(), model.clone());
         let paths = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let paths2 = paths.clone();
+        let metrics_boundary = Arc::new(AtomicU32::new(0));
+        let mb2 = metrics_boundary.clone();
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
         let handle = std::thread::spawn(move || {
@@ -79,18 +83,17 @@ impl SlotsEngine {
                     return;
                 }
                 // card #443 r4: remember every path the collector asked, so the no-extra-HTTP
-                // assertion can NAME the extra one instead of only counting it
+                // assertion can NAME the extra one instead of only counting it. The record is
+                // made on every arm (404s and the broken /get_server_info arm included), so
+                // an extra GET /health per poll cannot pass unseen (rv-443's M3 gap).
                 paths2.lock().push(req.url().to_string());
                 let (code, body) = match req.url() {
                     u if u.starts_with("/docker/") && u.ends_with("/started_at") => {
-                        // card #443: this route MUST NEVER be asked again - count it as an
-                        // unexplained request so the no-extra-HTTP test fails loudly on it
-                        total2.fetch_add(1, Ordering::Relaxed);
+                        // card #443: this route MUST NEVER be asked again - a 404 with the
+                        // total-ask count already bumped above
                         (404, "route deleted (card #443)".to_string())
                     }
                     "/v1/models" => {
-                        vm2.fetch_add(1, Ordering::Relaxed);
-                        total2.fetch_add(1, Ordering::Relaxed);
                         let id = match model2.load(Ordering::Relaxed) {
                             0 => "fake-model-414".to_string(),
                             1 => "fake-model-414-restarted".to_string(),
@@ -99,15 +102,19 @@ impl SlotsEngine {
                         (200, format!("{{\"data\":[{{\"id\":\"{id}\"}}]}}"))
                     }
                     "/metrics" => {
-                        total2.fetch_add(1, Ordering::Relaxed);
+                        // card #523: a /metrics answer ENDS a poll's scrapes, so the engine
+                        // thread itself marks the log index right after pushing it - the poll
+                        // boundary the no-extra-HTTP test slices between.
+                        mb2.store(paths2.lock().len() as u32, Ordering::Relaxed);
                         (200, "sglang:num_running_reqs{} 0\nsglang:num_queue_reqs{} 0\n".to_string())
                     }
                     "/get_server_info" => match broken2.load(Ordering::Relaxed) {
                         0 => {
                             hits2.fetch_add(1, Ordering::Relaxed);
-                            total2.fetch_add(1, Ordering::Relaxed);
                             (200, format!("{{\"version\":\"414.0\",\"max_running_requests\":{}}}", slots2.load(Ordering::Relaxed)))
                         }
+                        // card #523: the 503 arm counts too (total bumped once, above) - rv-443
+                        // M3: a broken /get_server_info arm must never be an invisible ask
                         n => (n, "no".to_string()),
                     },
                     _ => (404, "no".to_string()),
@@ -115,7 +122,7 @@ impl SlotsEngine {
                 let _ = req.respond(tiny_http::Response::from_string(body).with_status_code(code));
             }
         });
-        SlotsEngine { port, handle: Some(handle), slots, broken, info_hits, model, v1models_hits, total_hits, paths }
+        SlotsEngine { port, handle: Some(handle), slots, broken, info_hits, model, paths, metrics_boundary }
     }
     fn url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
@@ -256,14 +263,17 @@ fn slots_refetched_when_engine_identity_changes() {
     let s = c.status_when(|s| s["serve"]["slots"] == 3, "first boot, slots 3");
     assert_eq!(s["serve"]["slots"], 3);
     let hits_after_first = e.info_hits.load(Ordering::Relaxed);
-    let vm_after_first = e.v1models_hits.load(Ordering::Relaxed);
+    let v1models = |e: &SlotsEngine| e.paths.lock().iter().filter(|p| p.as_str() == "/v1/models").count();
+    let vm_after_first = v1models(&e);
     e.model.store(1, Ordering::Relaxed);
     e.slots.store(8, Ordering::Relaxed);
     let s = c.status_when(|s| s["serve"]["slots"] == 8, "restart: new served id, max_running_requests 3 -> 8");
     assert_eq!(s["serve"]["slots"], 8);
     // the collector really re-ASKED (a mirrored stale number would pass the asserts above)
     assert!(e.info_hits.load(Ordering::Relaxed) > hits_after_first, "the re-fetch was the collector's own ask, not a carried value");
-    assert!(e.v1models_hits.load(Ordering::Relaxed) > vm_after_first, "the new id was really served by /v1/models");
+    // the new id was really served by /v1/models (card #523: read from the engine's path log,
+    // the one record every answered request lands in)
+    assert!(v1models(&e) > vm_after_first, "the new id was really served by /v1/models");
 }
 
 /// rv-lead-lss 20:46: the container START TIME is a gate key of its own. The fake moves ONLY
@@ -359,11 +369,13 @@ fn slots_refreshed_periodically() {
 /// nothing, a 404 every 5 s against a real SGLang. The fake engine counts EVERY request it
 /// sees and RECORDS the path of each (r4: the extra request is named, not just counted). The
 /// baseline set of paths a settled sglang poll legitimately asks is {/v1/models, /metrics} -
-/// the same two scrapes at 3f21a9c (Sglang::scrape asks both; the pre-#414 behaviour). The
-/// window is measured IN POLLS - between two /v1/models scrapes the engine must see nothing
-/// beyond each poll's own two scrapes (r2/r3: a wall-clock settle cannot say "per poll", it
-/// races the collector's own loop; the /get_server_info asks are counted separately - the
-/// slots gate's own, already covered).
+/// the same two scrapes at 3f21a9c (Sglang::scrape: openai_model asks /v1/models, then
+/// fetch("/metrics")). The window is measured IN POLLS, with NO timing window at all: the
+/// engine thread marks a POLL BOUNDARY in its own path log at each /metrics answer (card
+/// #523), so the test slices the log between two boundaries and judges COMPLETE polls (the
+/// r1-r4 counter window could catch the NEXT poll's first request at its edge - the #513
+/// flake, 1 in 3 runs). The /get_server_info asks are counted separately - the slots gate's
+/// own, already covered.
 #[test]
 fn no_extra_http_per_poll_when_docker_has_no_answer() {
     let e = SlotsEngine::start(3);
@@ -373,34 +385,30 @@ fn no_extra_http_per_poll_when_docker_has_no_answer() {
     // settled: at least 3 further polls with nothing to re-read, OBSERVED (card #443 r3: a wall
     // clock sleep races the collector's own poll loop - /status is only rebuilt at the END of
     // each poll, so the boot wait can return inside the FIRST poll and a bare sleep starts its
-    // window before any new scrape; a settle that sees no polls proves nothing. Each /v1/models
-    // answer is exactly one poll's scrape, so settling on the COUNTER pins both window edges at
-    // poll boundaries: vm0 is the boot scrape's boundary, +3 is the wait.)
-    let vm0 = e.wait_v1models(1, None); // land exactly after the boot poll's scrape
-    let vm1 = e.wait_v1models(3, Some(vm0)); // three more polls, nothing to re-read in them
-    let (total_at_start, info_at_start) = (e.total_hits.load(Ordering::Relaxed), e.info_hits.load(Ordering::Relaxed));
-    // one more poll IN the window (r2's bug: vm1 itself can still sit just before poll N's
-    // scrape, so a window [vm1, vm1] could observe no poll at all)
-    let vm2 = e.wait_v1models(1, Some(vm1));
-    let vm3 = e.wait_v1models(1, Some(vm2)); // a second, so the window is bounded BY scrapes
-    // the window held >= 2 completed polls: poll A's /metrics+... all arrived before the first
-    // edge (vm2 counted), poll B's own scrape ended the window (vm3 counted)
-    assert!(vm3 - vm1 >= 2, "the window must hold at least two polls ({} - {})", vm3, vm1);
-    // EVERYTHING the collector asked the engine in that window is total2-total_at_start. A
-    // settled sglang poll scrapes /v1/models AND /metrics (the baseline set at 3f21a9c), so the
-    // bound is 2 asks per poll - the slots gate was quiet (recheck 9_999_999, identity
-    // unchanged, nothing failed), so NO /get_server_info may appear in the window at all, and
-    // NOTHING ELSE may appear either: the deleted /docker/<name>/started_at route, a detect,
-    // anything extra shows up here (and is NAMED by the paths list).
-    let (total2, info2) = (e.total_hits.load(Ordering::Relaxed), e.info_hits.load(Ordering::Relaxed));
-    let extra = (total2 - total_at_start) - 2 * (vm3 - vm1);
-    // r4: NAME the extra request - every path the engine answered since the window opened
-    // (the boot asks above are before total_at_start, so slice off the boot prefix by the
-    // count: the last (total2 - total_at_start) answers are the window's).
-    let paths = e.paths.lock();
-    let window_paths = paths[paths.len().saturating_sub((total2 - total_at_start) as usize)..].join(", ");
-    assert_eq!(extra, 0, "in {} polls the engine saw {} requests but only {} scrape-pairs (/v1/models + /metrics each) - extra per-poll HTTP exists; paths in the window: [{}]", vm3 - vm1, total2 - total_at_start, vm3 - vm1, window_paths);
-    assert_eq!(info2, info_at_start, "no /get_server_info re-asks either");
+    // window before any new scrape; a settle that sees no polls proves nothing). Each
+    // /metrics answer is one poll's LAST scrape, so a boundary value names the log index just
+    // after a COMPLETE poll's scrapes: b1 = 1 more /metrics past b0's, b2 = 1 more past b1.
+    let b0 = e.next_poll(None); // land just after a COMPLETE poll's scrapes
+    let info_at_start = e.info_hits.load(Ordering::Relaxed);
+    let b1 = e.next_poll(Some(b0)); // poll A is COMPLETELY inside [b0, b1): /v1/models, /metrics
+    let b2 = e.next_poll(Some(b1)); // poll B has answered EVERYTHING by b2 - b2 IS poll B's last answer
+    let window = e.paths.lock()[b0 as usize..b2 as usize].to_vec();
+    // every boundary sits right after a /metrics answer, so [b0, b2) holds only COMPLETE polls:
+    // the /metrics answers in it ARE the polls (>= 2 by construction; more if this thread was
+    // descheduled across a boundary, and then the window holds more WHOLE polls, never a partial
+    // one - an exact "4" would be the flake again, one stall of > poll_secs away). A settled
+    // sglang poll is exactly [/v1/models, /metrics]: the slots gate was quiet (recheck
+    // 9_999_999, identity unchanged, nothing failed), so NO /get_server_info may appear, and
+    // NOTHING ELSE either - the deleted /docker/<name>/started_at route, a /health, a detect -
+    // any of them lands in the log and is NAMED here.
+    let polls = window.iter().filter(|p| p.as_str() == "/metrics").count();
+    assert!(polls >= 2, "the window [{b0}, {b2}) must hold at least two polls: [{}]", window.join(", "));
+    assert_eq!(window.len(), 2 * polls, "{polls} complete polls ask exactly {} scrapes (/v1/models + /metrics each) - extra per-poll HTTP exists; paths between the poll boundaries: [{}]", 2 * polls, window.join(", "));
+    for (i, p) in window.iter().enumerate() {
+        let expected = if i % 2 == 0 { "/v1/models" } else { "/metrics" };
+        assert_eq!(p, expected, "request {} between the poll boundaries is not the {} scrape of a settled sglang poll: [{}]", i + 1, if i % 2 == 0 { "first" } else { "second" }, window.join(", "));
+    }
+    assert_eq!(e.info_hits.load(Ordering::Relaxed), info_at_start, "no /get_server_info re-asks either");
 }
 
 /// A configured `slots` is the operator's word: the collector never re-ASKS the engine for a

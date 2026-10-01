@@ -55,6 +55,8 @@ pub struct Ctx<'a> {
     pub card: Option<&'a LoadoutCard>,
     pub gpu_indices: &'a [u32],
     pub thermal_exclude: &'a [u32],
+    /// a gateway is configured (`gate_url` set): the rejections rule only speaks behind one
+    pub has_gate: bool,
 }
 
 /// The owner's targets over one window: shares from the engine's histograms, uptime from the
@@ -85,7 +87,7 @@ pub fn targets(db: &Db, now: i64, name: &str, secs: i64, first_sample_ts: i64, c
 }
 
 pub fn window_stats(db: &Db, now: i64, name: &str, secs: i64, cx: &Ctx) -> WindowStats {
-    let Ctx { slots, first_sample_ts, card, gpu_indices, thermal_exclude } = *cx;
+    let Ctx { slots, first_sample_ts, card, gpu_indices, thermal_exclude, has_gate: _ } = *cx;
     let (from, to, res) = (now - secs, now + 1, tier(secs));
     let avg_pct = |metric: &str| merged(db, res, metric, from, to).map(|(a, _)| round1(a.avg() * 100.0));
     let sum = |metric: &str| merged(db, res, metric, from, to).map(|(a, _)| a.sum);
@@ -154,6 +156,7 @@ pub fn window_stats(db: &Db, now: i64, name: &str, secs: i64, cx: &Ctx) -> Windo
             _ => None,
         },
         rejects,
+        gate_absent: !cx.has_gate,
         growth: None,
         wh_per_mtok: match (energy, energy_tokens) {
             (Some(j), Some(t)) if t > 0.0 && j > 0.0 => Some(round1(j / 3600.0 / (t / 1e6))),
@@ -204,7 +207,7 @@ pub fn growth(db: &Db, now: i64, first_sample_ts: i64) -> Option<Growth> {
 
 pub fn compute(db: &Db, now: i64, cfg: &Config, slots: u32, first_sample_ts: i64, card: Option<&LoadoutCard>, gpu_indices: &[u32]) -> AdviceDoc {
     let grown = growth(db, now, first_sample_ts);
-    let cx = Ctx { slots, first_sample_ts, card, gpu_indices, thermal_exclude: &cfg.rules.thermal_exclude };
+    let cx = Ctx { slots, first_sample_ts, card, gpu_indices, thermal_exclude: &cfg.rules.thermal_exclude, has_gate: cfg.has_gate() };
     let stats = WINDOWS
         .iter()
         .map(|(name, secs)| {
@@ -263,7 +266,7 @@ mod tests {
     #[test]
     fn window_numbers_come_from_the_rollups() {
         let (db, now) = filled();
-        let w = window_stats(&db, now, "24h", 86_400, &Ctx { slots: 8, first_sample_ts: T0, card: None, gpu_indices: &[0, 1], thermal_exclude: &[0] });
+        let w = window_stats(&db, now, "24h", 86_400, &Ctx { slots: 8, first_sample_ts: T0, card: None, gpu_indices: &[0, 1], thermal_exclude: &[0], has_gate: true });
         assert_eq!(w.covered_secs, 7200);
         // the minute still open is not rolled up yet, so shares are within a fraction of a percent
         let near = |v: Option<f64>, want: f64| v.is_some_and(|x| (x - want).abs() <= 0.3);
@@ -321,7 +324,7 @@ mod tests {
         let db = Db::memory();
         let doc = compute(&db, T0, &Config::default(), 8, T0, None, &[0]);
         assert_eq!(doc.windows.len(), 3);
-        assert!(doc.windows.iter().all(|w| w.findings.iter().all(|f| f.rule == "rejections")), "only 'the gateway turned nobody away' can be said of nothing: {:?}", doc.windows[0].findings);
+        assert!(doc.windows.iter().all(|w| w.findings.is_empty()), "of nothing, with no gateway (the default config), nothing can be said yet: {:?}", doc.windows[0].findings);
         assert!(growth(&db, T0, T0).is_none());
         let (db, now) = filled();
         assert!(growth(&db, now, T0).is_none(), "two hours of data have no earlier week");
@@ -359,7 +362,7 @@ mod span_tests {
         write("tok_cached", 5, 90_000.0);
         // evictions counted for the last 2 h: 60 000 per bucket = 360 000 per hour
         write("tok_evicted", 2, 60_000.0);
-        let cx = Ctx { slots: 8, first_sample_ts: hours(19), card: None, gpu_indices: &[], thermal_exclude: &[] };
+        let cx = Ctx { slots: 8, first_sample_ts: hours(19), card: None, gpu_indices: &[], thermal_exclude: &[], has_gate: true };
         let w = window_stats(&db, now, "24h", 86_400, &cx);
         // 6000 J per 10 000 tokens = 0.6 J/token = 166.7 Wh per 1M - NOT 5/19 of it
         assert_eq!(w.wh_per_mtok, Some(166.7));

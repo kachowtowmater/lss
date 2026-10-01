@@ -148,7 +148,7 @@ one blank line are left out. Every other line is as printed:
 == 1/5  Finding your LLM server
    asking the usual ports on this machine (SGLang, vLLM, llama.cpp, Ollama, LM Studio, TGI, any OpenAI-compatible server) ...
    1) vLLM at http://127.0.0.1:18431 - e2e-fake-vllm  [sure: /metrics carries `vllm:` series]
-   Which one should lss watch? (1, o = another address, q = quit) [1]
+   Which one should lss watch? (1, r = the server is on another machine, q = quit) [1]
 
 == 2/5  Testing http://127.0.0.1:18431
    [ok] models: e2e-fake-vllm

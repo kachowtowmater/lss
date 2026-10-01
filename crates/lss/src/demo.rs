@@ -316,6 +316,7 @@ pub fn advice(now: i64) -> AdviceDoc {
         spec_by_level: vec![(1, 5.9), (2, 5.6), (4, 5.1), (8, 3.9)],
         prefill_time_pct: Some(19.0),
         rejects: vec![LaneRejects { lane: "public".into(), too_busy_429: 38, too_large_413: 3 }, LaneRejects { lane: "trusted".into(), ..Default::default() }],
+        gate_absent: false,
         growth: (name != "24h").then_some(Growth { tokens_per_day: 1.4e6, tokens_per_day_prev: 0.86e6, requests_per_day: 2_270.0, requests_per_day_prev: 1_510.0, peak_users: 6.0, peak_users_prev: 4.0, prev_days_covered: 7.0, peak_users_basis: None }),
         wh_per_mtok: Some(649.0),
         gen_tokens: Some(if name == "24h" { 1.43e6 } else { 9.8e6 }),

@@ -153,6 +153,72 @@ fn assert_all(shot: &Shot, needles: &[&str]) {
     }
 }
 
+/// A sentence a box wraps across rows, read back whole: the body of the box whose title contains
+/// `title`, its rows joined with the spaces the wrap removed. Matching the joined text pins the
+/// FULL sentence on screen - a needle cut at a wrap boundary would pin the truncation instead
+/// (#524 r4: the ellipsized '…without o…' needle did exactly that). The box is read by its OWN
+/// corners (`box_text`), because on a side-by-side classic grid one screen row carries BOTH
+/// boxes' bodies (`││` between them) - a whole-row join merges the neighbours' words.
+fn box_sentences(shot: &Shot, title: &str) -> String {
+    let body = box_text(&shot.text, title);
+    let mut out = Vec::new();
+    let mut joined = String::new();
+    for row in body.split(' ') {
+        if row.is_empty() {
+            continue;
+        }
+        // the wrapped sentence has no final period until its last row ('…without' / 'one' has
+        // none; the LANES sentence does: it ends '…behind' / 'one.') - so rows join while
+        // unfinished, and a finished one starts fresh.
+        if joined.ends_with('.') || joined.ends_with('…') {
+            out.push(std::mem::take(&mut joined));
+        }
+        joined.push_str(row);
+        joined.push(' ');
+    }
+    if !joined.is_empty() {
+        out.push(joined);
+    }
+    out.join(" ")
+}
+
+/// The same readback over a text blob that is not a single `Shot` (a page's several screens
+/// pushed together), for the tests that scroll a page and read every screen's box. `None` when
+/// the box's title row is not on that screen at all (a page scrolled past the top cuts the
+/// corners the readback anchors on).
+fn box_sentences_opt(text: &str, title: &str) -> Option<String> {
+    if !text.contains(title) {
+        return None;
+    }
+    Some(box_sentences_str(text, title))
+}
+
+/// The same readback, panicked when the box is not on screen (the classic grid keeps USERS on
+/// screen at every size this runs at - `no_blank_rows...` pins that).
+fn box_sentences_str(text: &str, title: &str) -> String {
+    let body = box_text(text, title);
+    let mut joined = String::new();
+    for row in body.split(' ') {
+        if row.is_empty() {
+            continue;
+        }
+        if joined.ends_with('.') || joined.ends_with('…') {
+            joined.push(' ');
+        }
+        joined.push_str(row);
+        joined.push(' ');
+    }
+    joined
+}
+
+/// The full no-gateway sentence the classic USERS box wraps: 'no gateway configured (optional):
+/// no per-user data without one' - read back from the box's own rows (wrapped or not) so the
+/// needle is the sentence a READER sees, not a fragment.
+fn says_full_no_gateway_users_sentence(shot: &Shot, what: &str) {
+    let flat = box_sentences(shot, "o USERS");
+    assert!(flat.contains("no gateway configured (optional): no per-user data without one"), "{what}: the full no-gateway sentence is on screen (wrapped if it must be), not cut:\n{}", shot.text);
+}
+
 /// The dash.rs row whose OWN label is `label` (padded to `dash::LABEL_W`, right after the box's
 /// one leading border glyph) - not just any line that happens to CONTAIN `label` somewhere in its
 /// value or trailing padding. `"day"` is a real trap here: `"today"` contains it as a substring,
@@ -2002,24 +2068,48 @@ fn no_gateway_shows_one_plain_optional_line_not_errors() {
             clean(&shot.text, &format!("{name} {w}x{h}"));
         }
     }
-    // the classic grid: LANES / USERS say the one line
+    // the classic grid: LANES / USERS say the one line (the USERS sentence read back WHOLE -
+    // rows joined, so a wrap cannot hide a cut: r4's ellipsized '…without o…' needle did)
     let shot = render(&c, 126, 41, now);
-    assert_all(&shot, &["o LANES (no gateway)", "no gateway configured: requests go straight to the engine.", "o USERS (no gateway)", "no gateway configured: nothing tells users apart"]);
+    assert_all(&shot, &["o LANES (no gateway)", "no gateway configured (optional): lanes only exist", "o USERS (no gateway)"]);
+    says_full_no_gateway_users_sentence(&shot, "classic 126x41");
     // page 1 (the default): the LANES and USERS boxes each carry it - read the whole page,
     // scrolling, so the assertion does not depend on where the boxes land at this height
     let mut seen = render(&a, 126, 41, now).text;
+    let mut flat = box_sentences_opt(&seen, "o USERS").unwrap_or_default() + &box_sentences_opt(&seen, "o LANES").unwrap_or_default();
     for _ in 0..10 {
         let shot = press(&mut a, KeyCode::PageDown, 126, 41, now);
         assert_eq!(shot.red_cells(), 0, "nothing red\n{}", shot.text);
         seen.push_str(&shot.text);
+        // once paged past the top the box's TITLE row scrolls off and its wrap rows no longer
+        // have an anchor (`box_text` needs the corner row) - the unscrolled first screen is the
+        // one that has to carry the whole sentence
+        for title in ["o USERS", "o LANES"] {
+            if let Some(f) = box_sentences_opt(&shot.text, title) {
+                flat.push_str(&f);
+            }
+        }
     }
-    // (the two-column box wraps the line's tail; the words before the wrap are what is pinned)
-    assert!(seen.contains("no gateway configured (optional): lanes only exist") && seen.contains("no gateway configured (optional): no per-user data"), "page 1 says the plain line in both gateway boxes\n{seen}");
+    // (the box wraps the line's tail - its rows read back joined say the whole sentence; a
+    // needle cut at the wrap boundary would pin the truncation, not the sentence)
+    assert!(flat.contains("no gateway configured (optional): lanes only exist") && flat.contains("no gateway configured (optional): no per-user data without one"), "page 1 says the plain line in both gateway boxes\n{seen}");
     clean(&seen, "page 1 at 126x41, scrolled");
     // and the text report agrees in words
     let text = lss::plain::status(&strangers_machine(), now);
     assert!(text.contains("GATE     no gateway configured"), "{text}");
     clean(&text, "plain report");
+}
+
+/// #524: the classic overview's LANES box (gate.absent) carries the same "(optional)" wording
+/// the default layout's LANES box has used since #513 - no gateway is an option, not a fault.
+#[test]
+fn classic_lanes_box_uses_the_optional_no_gateway_line() {
+    let (c, now) = classic(strangers_machine());
+    let shot = render(&c, 126, 41, now);
+    // (the LANES sentence wraps at inner width 61: "…lanes only exist behind" / "one." -
+    // the wrap-safe join in says_full_no_gateway_users_sentence is how the USERS one is read)
+    assert_all(&shot, &["o LANES (no gateway)", "no gateway configured (optional): lanes only exist", "one.", "Requests go straight to the engine"]);
+    assert_eq!(shot.red_cells(), 0, "{}", shot.text);
 }
 
 /// the engine reports no numbers (Ollama, or a model with no metrics): every number the engine
@@ -2030,7 +2120,8 @@ fn no_gateway_shows_one_plain_optional_line_not_errors() {
 fn an_engine_that_reports_nothing_reads_n_a_never_zero_and_nothing_is_red() {
     let (a, now) = classic(strangers_machine());
     let shot = render(&a, 126, 41, now);
-    assert_all(&shot, &["mistral:latest", "n/a (not reported by Ollama)", "C1 probe 191.7 tok/s", "o LANES (no gateway)", "no gateway configured: requests go straight to the engine.", "o USERS (no gateway)", "no gateway configured: nothing tells users apart"]);
+    assert_all(&shot, &["mistral:latest", "n/a (not reported by Ollama)", "C1 probe 191.7 tok/s", "o LANES (no gateway)", "no gateway configured (optional): lanes only exist", "o USERS (no gateway)"]);
+    says_full_no_gateway_users_sentence(&shot, "classic 126x41");
     assert!(!shot.text.contains("o GPUS") && !shot.text.contains("GATE DOWN") && !shot.text.contains("needs gate v5.2"), "{}", shot.text);
     assert!(!shot.text.contains(" 0.0 tok/s") && !shot.text.contains("0/0"), "a number that is not reported is never shown as zero\n{}", shot.text);
     assert_eq!(shot.red_cells(), 0, "not reporting something is not a problem\n{}", shot.text);

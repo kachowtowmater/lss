@@ -329,6 +329,89 @@ on:\n  push:\n    paths:\n      - \"crates/**\"\n      - \"gate/tests/**\"\n    
 }
 
 #[test]
+fn the_exported_ci_runs_strangers_on_ubuntu_latest_not_our_self_hosted_runner() {
+    // card #547: PR #19 moves the private CI's Linux jobs to OUR self-hosted runner
+    // ([self-hosted, linux, llm-server-status]). A stranger's copy has no such runner, so the
+    // export must rewrite those runs-on lines to ubuntu-latest - otherwise every Linux job sits
+    // "Queued" forever and "is main green" is unverifiable for anyone outside our seat (the same
+    // failure card #149 fixed for the missing exported-tree job). Same synthetic-source pattern
+    // as the_ci_strip_catches_a_gate_path_filter_shaped_differently_than_the_literal_case.
+    let src = std::env::temp_dir().join(format!("lss-export-runner-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&src);
+    std::fs::create_dir_all(src.join("scripts")).unwrap();
+    std::fs::create_dir_all(src.join("packaging")).unwrap();
+    std::fs::create_dir_all(src.join(".github/workflows")).unwrap();
+    std::fs::copy(repo().join("scripts/export-public.sh"), src.join("scripts/export-public.sh")).unwrap();
+    std::fs::copy(repo().join("scripts/privacy-check.sh"), src.join("scripts/privacy-check.sh")).unwrap();
+    std::fs::copy(repo().join("packaging/privacy-words.example"), src.join("packaging/privacy-words.example")).unwrap();
+    std::fs::write(src.join(".github/workflows/ci.yml"), "\
+jobs:\n  rust:\n    runs-on: [self-hosted, linux, llm-server-status]\n    steps:\n      - run: echo hi\n  lint:\n    runs-on: [self-hosted, linux, llm-server-status]\n    steps:\n      - run: echo hi\n  docs:\n    # this job uses a GitHub-hosted runner\n    runs-on: ubuntu-latest\n").unwrap();
+
+    let dest = src.with_extension("out");
+    let _ = std::fs::remove_dir_all(&dest);
+    let out = Command::new("bash")
+        .arg(src.join("scripts/export-public.sh"))
+        .arg(&dest)
+        .env("LSS_EXPORT_SOURCE", &src)
+        .env("LSS_EXPORT_ALLOW_NO_WORDS", "1")
+        .output()
+        .expect("bash runs");
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+
+    let ci = std::fs::read_to_string(dest.join(".github/workflows/ci.yml")).expect("exported ci.yml exists");
+    assert!(!ci.contains("self-hosted") && !ci.contains("llm-server-status"), "the exported workflow still names our self-hosted runner:\n{ci}");
+    assert_eq!(ci.matches("runs-on: ubuntu-latest").count(), 3, "both Linux jobs rewritten plus the docs job kept:\n{ci}");
+    // the rewrite must not reorder indentation: each rewritten line keeps its position
+    assert!(ci.contains("  lint:\n    runs-on: ubuntu-latest"), "the rewritten line lost its indentation or position:\n{ci}");
+
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
+fn every_workflow_including_release_yml_runs_strangers_on_ubuntu_latest() {
+    // card #547 r3: PR #19 moves release.yml's Linux job to our self-hosted runner too, not only
+    // ci.yml's. Rewriting ci.yml alone left release.yml naming the runner, and publish-public.sh's
+    // P4 ("no runner of ours") refused every publish. Every exported workflow must be rewritten;
+    // the matrix job (runs-on: ${{ matrix.os }}) stays as it is.
+    let src = std::env::temp_dir().join(format!("lss-export-every-wf-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&src);
+    std::fs::create_dir_all(src.join("scripts")).unwrap();
+    std::fs::create_dir_all(src.join("packaging")).unwrap();
+    std::fs::create_dir_all(src.join(".github/workflows")).unwrap();
+    std::fs::copy(repo().join("scripts/export-public.sh"), src.join("scripts/export-public.sh")).unwrap();
+    std::fs::copy(repo().join("scripts/privacy-check.sh"), src.join("scripts/privacy-check.sh")).unwrap();
+    std::fs::copy(repo().join("packaging/privacy-words.example"), src.join("packaging/privacy-words.example")).unwrap();
+    std::fs::write(src.join(".github/workflows/ci.yml"), "\
+jobs:\n  rust:\n    runs-on: [self-hosted, linux, llm-server-status]\n    steps:\n      - run: echo hi\n").unwrap();
+    std::fs::write(src.join(".github/workflows/release.yml"), "\
+jobs:\n  build:\n    runs-on: ${{ matrix.os }}\n    steps:\n      - run: echo hi\n  publish:\n    needs: build\n    runs-on: [self-hosted, linux, llm-server-status]\n    steps:\n      - run: echo hi\n").unwrap();
+
+    let dest = src.with_extension("out");
+    let _ = std::fs::remove_dir_all(&dest);
+    let out = Command::new("bash")
+        .arg(src.join("scripts/export-public.sh"))
+        .arg(&dest)
+        .env("LSS_EXPORT_SOURCE", &src)
+        .env("LSS_EXPORT_ALLOW_NO_WORDS", "1")
+        .output()
+        .expect("bash runs");
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+
+    for name in ["ci.yml", "release.yml"] {
+        let wf = std::fs::read_to_string(dest.join(".github/workflows").join(name)).expect("exported workflow exists");
+        assert!(!wf.contains("self-hosted") && !wf.contains("llm-server-status"), "exported {name} still names our self-hosted runner:\n{wf}");
+        assert_eq!(wf.matches("runs-on: ubuntu-latest").count(), 1, "exported {name}: the self-hosted job was not rewritten:\n{wf}");
+    }
+    let release = std::fs::read_to_string(dest.join(".github/workflows/release.yml")).unwrap();
+    assert!(release.contains("  publish:\n    needs: build\n    runs-on: ubuntu-latest"), "release.yml's rewritten line lost its indentation or position:\n{release}");
+    assert!(release.contains("    runs-on: ${{ matrix.os }}"), "release.yml's matrix runs-on was touched:\n{release}");
+
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&dest);
+}
+
+#[test]
 fn the_exported_docs_never_point_a_reader_at_a_path_the_export_does_not_carry() {
     // card #83: gate/ and site/ are excluded from the export, so a reader of the EXPORTED tree
     // must never be sent to a file under either. The RUNBOOK is followed mid-incident, and

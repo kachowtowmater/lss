@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.3.2 (2026-10-01)
+
+Fixes since v1.3.1. #546, #547, #523, #518, #468 are test/export hardening; the public CI now
+runs on the maintainer's own runner (PR #19).
+
+- **#525: the cost wizard confirms a bare 2-letter country code.** Typing something like `NO`
+  asks `Is that NO (Norway)? [y/N]` instead of silently storing it as a country.
+- **#524: the no-gateway wording is honest.** With no gateway, the ADVICE line no longer says
+  'The gateway turned nobody away', and the classic overview's LANES/USERS boxes use the
+  '(optional)' wording instead of gateway sentences.
+- **#431: the gateway's model list answers every waiting request** even when a shared refresh is
+  cancelled or fails (single-flight hardening of #411).
+- **#532: `publish-public.sh` removes its temporary work directory** when it exits;
+  `--keep-workdir` keeps it for inspection.
+
 ## v1.3.1 (2026-09-29)
 
 - **#530: the README hero image renders in Safari/iPhone.** Rows of `docs/img/lss-demo.svg`

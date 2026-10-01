@@ -928,7 +928,7 @@ fn gateway(out: &mut Vec<Section>, d: &PageData, s: &Status, app: &App, body: Re
     // collector sent nothing for this page" - true, but not why, and not what the overview and
     // lss status already say in the same situation.
     if s.gate.absent {
-        out.push(message("GATEWAY", colour, "no gateway configured: requests go straight to the engine. Lanes, per-user numbers and rejections need one in front of it (gate_url in the collector's config).".into(), false, body.width));
+        out.push(message("GATEWAY", colour, "no gateway configured (optional): lanes only exist behind one. Requests go straight to the engine; per-user numbers and rejections need one in front of it (gate_url in the collector's config).".into(), false, body.width));
         return;
     }
     if let Some(g) = &d.gateway {

@@ -4,7 +4,7 @@
 //! ever silently dropped: an area that cannot be a box becomes a 1-line bar (`GPUS … tab >`)
 //! that still takes focus and opens its page.
 
-use super::widgets::{bar_line, bold, dim, draw_box, fg, fit, fit_line, frame, gauge, good, red, render_lines, sparkline, sparkline_to, warn};
+use super::widgets::{bar_line, bold, dim, draw_box, fg, fit, fit_line, frame, gauge, good, red, render_lines, sparkline, sparkline_to, warn, wrap};
 use super::{draw_header, footer, pick_shape, App, Panel, Shape};
 use crate::plain::{gib, num, opt_ms, pct, top_keys};
 use lss_core::advice::Severity;
@@ -909,7 +909,7 @@ fn bar(cx: &Ctx, p: Panel, width: usize) -> Line<'static> {
                 [build(true), build(false)].into_iter().find(|v| spans_width(v) <= room).unwrap_or_else(hottest)
             }
         }
-        Panel::Lanes if s.gate.absent => vec![Span::styled("no gateway configured", dim())],
+        Panel::Lanes if s.gate.absent => vec![Span::styled("no gateway configured (optional): lanes need one", dim())],
         Panel::Lanes => {
             let five = s.lanes.public.codes_10m.c5xx + s.lanes.trusted.codes_10m.c5xx;
             let build = |waiters: bool, excluded: bool| -> Vec<Span<'static>> {
@@ -948,7 +948,7 @@ fn bar(cx: &Ctx, p: Panel, width: usize) -> Line<'static> {
                 let n = texts.len();
                 vec![Span::raw(texts.into_iter().enumerate().find(|(i, t)| t.chars().count() <= room || i + 1 == n).map(|(_, t)| t).unwrap_or_default())]
             } else if s.gate.absent {
-                vec![Span::styled("no gateway configured: nothing tells users apart", dim())]
+                vec![Span::styled("no gateway configured (optional): no per-user data without one", dim())]
             } else {
                 vec![Span::raw(format!("slots {:.0}/{}", s.serve.running, s.serve.slots)), Span::styled(" · per-user numbers need gate v5.2", dim())]
             }
@@ -1565,7 +1565,7 @@ fn draw_lanes(f: &mut Frame, cx: &Ctx, inner: Rect) -> u16 {
     let s = cx.s;
     if s.gate.absent {
         let mut lines: Vec<Line<'static>> = Vec::new();
-        for part in ["no gateway configured: requests go straight to the engine.", "Lanes, per-user numbers and rejections need one in front of it (gate_url in the collector's config)."] {
+        for part in ["no gateway configured (optional): lanes only exist behind one.", "Requests go straight to the engine; per-user numbers and rejections need one in front of it (gate_url in the collector's config)."] {
             lines.extend(super::widgets::wrap(part, inner.width as usize).into_iter().map(|l| Line::styled(l, dim())));
         }
         lines.truncate(inner.height as usize);
@@ -1631,6 +1631,12 @@ pub fn severity_colour(sev: Severity) -> Style {
     }
 }
 
+/// The USERS no-gateway sentence, wrapped over the rows below it the way LANES does it: a
+/// cut-off sentence ("…without o…") says less than the box's empty rows could hold.
+fn no_gateway_users_lines(w: usize) -> Vec<Line<'static>> {
+    wrap("no gateway configured (optional): no per-user data without one", w).into_iter().map(|l| Line::styled(l, dim())).collect()
+}
+
 /// USERS: who is on the server right now, the slots they take, and the three busiest.
 fn users_lines(cx: &Ctx, inner: Rect) -> Vec<Line<'static>> {
     let s = cx.s;
@@ -1644,12 +1650,14 @@ fn users_lines(cx: &Ctx, inner: Rect) -> Vec<Line<'static>> {
         // how many run at once is not known: say so instead of drawing a gauge of nothing
         let why = s.serve.na("running").unwrap_or_else(|| "n/a (set `slots` in the collector's config)".to_string());
         let mut lines = vec![first_fit(vec![vec![label("slots    "), Span::styled(why, dim())], vec![label("slots "), Span::styled("n/a", dim())]], w)];
-        lines.push(fit_line(vec![Span::styled(if s.gate.absent { "no gateway configured: nothing tells users apart" } else { "who is using them: needs gateway v5.2" }, dim())], w));
+        lines.extend(if s.gate.absent { no_gateway_users_lines(w) } else { vec![fit_line(vec![Span::styled("who is using them: needs gateway v5.2", dim())], w)] });
         return lines;
     }
     let gauge_line = first_fit(vec![vec![label("slots    "), Span::styled(slots_text.clone(), slots_style), label("  in use now")], vec![label("slots "), Span::styled(slots_text.clone(), slots_style), label(" in use")], vec![label("slots "), Span::styled(slots_text, slots_style)]], w);
     if s.gate.absent {
-        return vec![gauge_line, fit_line(vec![Span::styled("no gateway configured: nothing tells users apart", dim())], w)];
+        let mut lines = vec![gauge_line];
+        lines.extend(no_gateway_users_lines(w));
+        return lines;
     }
     if !u.available {
         return vec![gauge_line, fit_line(vec![Span::styled("who is using them: needs gateway v5.2", dim())], w), fit_line(vec![Span::styled("until then the GATEWAY page has requests per key", dim())], w)];

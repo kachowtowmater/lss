@@ -101,6 +101,19 @@ pub fn parse_country(input: &str) -> Result<Country, String> {
     Ok(Country::Other(t.to_string()))
 }
 
+/// A bare 2-letter alphabetic token ("no", "ok", "de"): the shape a country CODE has, but also
+/// the shape a stray word or a slip has. `parse_country` reads one as that code; the cost wizard
+/// asks one confirmation on EVERY bare code - listed (NO) or not (XZ) alike - because 'no'
+/// silently storing Norway is a wrong record, while 'Bolivia' kept as typed is only a spelling.
+/// A 3+ letter word ("usa", "uk") is NOT bare, and neither is a US spelling ("us"): that answer
+/// runs the ZIP flow, so it never names a country to confirm.
+pub fn is_bare_two_letter_code(input: &str) -> bool {
+    let t = input.trim();
+    t.len() == 2
+        && t.chars().all(|c| c.is_ascii_alphabetic())
+        && !t.eq_ignore_ascii_case("us")
+}
+
 /// True when the input looks like a rate typed at the country question: starts with a digit,
 /// `$` or `¢`, or carries a per-kWh unit.
 fn is_rate_like(t: &str) -> bool {
@@ -151,6 +164,20 @@ mod tests {
         for (typed, want) in [("GB", "GB"), ("uk", "GB"), ("germany", "DE"), ("Germany", "DE"),
                               ("GERMANY", "DE"), ("de", "DE"), ("south korea", "KR"), ("canada", "CA")] {
             assert_eq!(parse_country(typed), Ok(Country::Other(want.into())), "{typed}");
+        }
+    }
+
+    #[test]
+    fn a_bare_two_letter_word_is_the_code_shape_not_necessarily_a_country() {
+        // stray words people type at the country prompt, and real codes: every bare 2-letter
+        // answer is the ambiguous shape the wizard confirms (listed NO, unlisted XZ alike)
+        for t in ["no", "ok", "hi", "NO", "Ok", " de ", "me", "de", "DE", "gb", "uk", "nz"] {
+            assert!(is_bare_two_letter_code(t), "{t}");
+        }
+        // everything that must pass unconfirmed: names, longer words, US spellings, rates
+        for t in ["Germany", "Bolivia", "south korea", "usa", "us", "United States",
+                  "0.25", "$0.25", "a", "abc", "d3", "3d", "", "  "] {
+            assert!(!is_bare_two_letter_code(t), "{t}");
         }
     }
 

@@ -645,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "lss"
-version = "1.3.1"
+version = "1.3.2"
 dependencies = [
  "chrono",
  "crossterm",
@@ -658,7 +658,7 @@ dependencies = [
 
 [[package]]
 name = "lss-collector"
-version = "1.3.1"
+version = "1.3.2"
 dependencies = [
  "chrono",
  "libc",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "lss-core"
-version = "1.3.1"
+version = "1.3.2"
 dependencies = [
  "chrono",
  "serde",

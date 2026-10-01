@@ -316,6 +316,12 @@ fn toml_dump(cfg: &Config) -> String {
     serde_json::to_string_pretty(cfg).unwrap_or_default()
 }
 
+fn omp_watch_path(cfg: &Config, home: &str) -> Option<String> {
+    let omp_config_path = (!cfg.rules.omp_config_path.trim().is_empty())
+        .then(|| expand_home(&cfg.rules.omp_config_path, home));
+    omp_config_path
+}
+
 fn run(mut cfg: Config, home: &str) {
     let started_at = unix_now();
     if cfg.host.trim().is_empty() {
@@ -323,8 +329,7 @@ fn run(mut cfg: Config, home: &str) {
     }
     // #36, 2026-09-21; #514, 2026-09-29: omp's shared config, watched (never written) for a
     // stale default model - OPT-IN: empty `omp_config_path` (the default) means not watched.
-    let omp_config_path = (!cfg.rules.omp_config_path.trim().is_empty())
-        .then(|| expand_home(&cfg.rules.omp_config_path, home));
+    let omp_config_path = omp_watch_path(&cfg, home);
     // #75, 2026-09-22: the OWNER's real electricity rate table - loaded once at startup, same as
     // every other config; a rates.toml edited later needs a restart, same as collector.toml.
     // Missing/unset/unparsable is never fatal and never an error: cost tracking is simply off
@@ -1472,6 +1477,92 @@ mod disk_tests {
             super::disk_reading("/no/such/path/264"),
             None,
             "unreadable = no reading (never a recovery)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod omp_config_optin_tests {
+    use super::*;
+    use lss_core::config::parse_config;
+
+    // tb lss #518: the collector's opt-in wiring is a SEAM above the lss-core rules tests: with
+    // `omp_config_path` empty (the default), the collector must resolve to None - a real file at
+    // the default ~/.omp/agent/config.yml under the temp HOME is NEVER read/watched. Mutant M2
+    // (#514) made the collector always watch that default path; this test fails under it.
+    #[test]
+    fn collector_never_reads_the_omp_config_when_omp_config_path_is_empty() {
+        // a REAL file at the default path, under a temp HOME - with the wiring broken it WOULD be
+        // read (None must be the resolved value, so the file is never even touched)
+        let home = std::env::temp_dir()
+            .join(format!("lss518-{}", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
+        let cfg_dir = format!("{home}/.omp/agent");
+        std::fs::create_dir_all(&cfg_dir).expect("make temp omp dir");
+        std::fs::write(
+            format!("{cfg_dir}/config.yml"),
+            "modelRoles:\n  default: served-model-518\n",
+        )
+        .expect("write temp omp config");
+
+        // the DEFAULT config (omp_config_path is empty) - what a box without omp ships with
+        let mut cfg = Config::default();
+        assert!(
+            cfg.rules.omp_config_path.trim().is_empty(),
+            "the shipped default must keep omp_config_path empty"
+        );
+
+        let resolved = omp_watch_path(&cfg, &home);
+        assert_eq!(
+            resolved, None,
+            "an empty omp_config_path must resolve to None: the collector never reads the omp config"
+        );
+        // the file was never opened for reading by the wiring itself - only the test touched it
+        let mtime_before = std::fs::metadata(format!("{cfg_dir}/config.yml"))
+            .and_then(|m| m.modified())
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            omp_watch_path(&cfg, &home),
+            None,
+            "re-resolving must stay None (no lazy/default-path fallback appears)"
+        );
+        let mtime_after = std::fs::metadata(format!("{cfg_dir}/config.yml"))
+            .and_then(|m| m.modified())
+            .unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "the omp config file itself is never written or touched by the watcher wiring"
+        );
+
+        // CONTROL: a SET path is returned (expanded) - the same fn that returns None for empty
+        cfg.rules.omp_config_path = "~/.omp/agent/config.yml".into();
+        assert_eq!(
+            omp_watch_path(&cfg, &home),
+            Some(format!("{home}/.omp/agent/config.yml")),
+            "a set omp_config_path must resolve to the expanded path (the watch stays available)"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    // a parsed config (parse_config path, not just Default) behaves the same: "" -> None
+    #[test]
+    fn parsed_config_with_empty_omp_config_path_resolves_to_none() {
+        let cfg_text = r#"
+[probe]
+enabled = false
+"#;
+        let cfg = parse_config(cfg_text).expect("parses");
+        assert!(
+            cfg.rules.omp_config_path.trim().is_empty(),
+            "a config that never names omp_config_path must default it empty"
+        );
+        assert_eq!(
+            omp_watch_path(&cfg, "/home/m"),
+            None,
+            "empty-by-default from parse_config too: not watched"
         );
     }
 }

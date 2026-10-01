@@ -137,6 +137,9 @@ the gateway's audit log, per day.
 *Points at:* that lane's limits in the gateway (requests per minute, concurrency, in-flight
 token budget, prompt size), or capacity.
 
+With no gateway configured (`gate_url` empty), this section says nothing: there is no gateway
+to turn anyone away.
+
 ### `growth` - how fast is usage growing?
 *Measures:* tokens per day, requests per day and the most users at once, the last 7 days against
 the 7 before them. Says nothing until the earlier week has at least 3 days of data.

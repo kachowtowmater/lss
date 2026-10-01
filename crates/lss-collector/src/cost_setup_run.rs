@@ -186,14 +186,32 @@ fn ask_menu(io: &mut dyn Io) -> Result<Option<Choice>, (i32, String)> {
     Err((2, "no valid choice after 5 tries".into()))
 }
 
-/// card #516: the wizard's first question. Blank = US (the built-in EIA table's home). A
-/// listed name or a 2-letter code is recorded as that code; an unknown spelling is kept as
-/// typed - the country is provenance, never a decision. A rate typed here is refused in words.
+/// card #516: the wizard's first question. Blank = US (the built-in EIA table's home). A listed
+/// name or a 2-letter code is recorded as that code; an unknown spelling is kept as typed - the
+/// country is provenance, never a decision. A rate typed here is refused in words.
+///
+/// Card #525: `parse_country` reads any bare 2-letter word as that country code, so a stray
+/// "no" or "ok" would silently record Norway / an "OK" country. A BARE code gets ONE
+/// confirmation - "Is that the country code NO (Norway)? [y/N]", default no - and anything but
+/// `y` re-asks the country. A full country NAME (Germany, Bolivia) passes unasked - the
+/// prompt already names the 2-letter shape, and `y` is one keystroke.
 fn ask_country(io: &mut dyn Io) -> Result<Option<Country>, (i32, String)> {
     for _ in 0..3 {
         let Some(a) = io.ask("Your country (2-letter code or name; blank = US) [US]: ") else { return Ok(None) };
         match cr::parse_country(&a) {
-            Ok(c) => return Ok(Some(c)),
+            Ok(c) => {
+                if let Country::Other(code) = &c {
+                    // the BARE 2-letter shape is the ambiguity ("no" may be the word): every
+                    // bare code confirms, listed (NO) or not (XZ)
+                    if cr::is_bare_two_letter_code(&a) {
+                        // name the country when the table knows it: "NO (Norway)", not "NO"
+                        let shown = cr::place_name_country(code)
+                            .map_or_else(|| code.clone(), |name| format!("{code} ({name})"));
+                        if !yes_no(io, &format!("Is that the country code {shown}? [y/N] "), false) { continue; }
+                    }
+                }
+                return Ok(Some(c));
+            }
             Err(e) => io.say(&format!("{e}.\n")),
         }
     }
@@ -622,6 +640,11 @@ mod tests {
         lss_core::rates::parse_rates_file(io.written().expect("a file was written")).expect("the collector reads it")
     }
 
+    /// The file's own provenance fields (country/currency live on RatesFile, not the pricing view).
+    fn file(io: &Script) -> lss_core::rates::RatesFile {
+        lss_core::rates::read_rates_file(io.written().expect("a file was written")).expect("the collector reads it")
+    }
+
     #[test]
     fn args_parse_and_conflicts_are_refused() {
         let a = |v: &[&str]| parse_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
@@ -937,6 +960,67 @@ mod tests {
         assert_eq!(price_at(&io, 1), Some(0.025));
     }
 
+    /// Card #525: a bare 2-letter word ("no", "ok") is a CODE to `parse_country`, but it may be
+    /// a stray word - one confirmation guards it; anything but `y` re-asks and nothing is stored.
+    #[test]
+    fn a_two_letter_word_is_not_taken_as_a_country_without_confirmation() {
+        // "no" -> "Is that the country code NO (Norway)? [y/N]" -> n -> asked the country
+        // again; the rate then types through and NO / Norway is nowhere in the file
+        let mut io = Script::new(&["no", "n", "Germany", "0,25"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        assert!(io.said.contains("Your country (2-letter code or name; blank = US) [US]: Is that the country code NO (Norway)? [y/N] Your country (2-letter code or name; blank = US) [US]: "), "re-asked after the NO: {}", io.said);
+        assert!(io.said.contains("Is that the country code NO (Norway)? [y/N]"), "{}", io.said);
+        let f = file(&io);
+        assert_eq!((f.country.as_deref(), f.currency.as_deref()), (Some("DE"), Some("EUR")), "{}", io.said);
+        // a listed code still gets ONE confirmation, and Enter (the [N] default) re-asks
+        let mut io = Script::new(&["de", "", "DE", "y", "0.25"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        assert_eq!(io.said.matches("Is that the country code ").count(), 2, "{}", io.said);
+        let f = file(&io);
+        assert_eq!((f.country.as_deref(), f.currency.as_deref()), (Some("DE"), Some("EUR")));
+        // an unlisted bare code: the confirmation is the plain code, `y` records it
+        let mut io = Script::new(&["xz", "y", "0.9", "bob"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        assert!(io.said.contains("Is that the country code XZ? [y/N]"), "{}", io.said);
+        let f = lss_core::rates::read_rates_file(io.written().unwrap()).unwrap();
+        assert_eq!((f.country.as_deref(), f.currency.as_deref()), (Some("XZ"), Some("BOB")));
+        // "ok" reads as an OK country ONLY on `y`; three `n`s exhaust the 3 tries = exit 1,
+        // nothing written, cost stays off
+        let mut io = Script::new(&["ok", "y", "0.3", ""]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        let f = lss_core::rates::read_rates_file(io.written().unwrap()).unwrap();
+        assert_eq!((f.country.as_deref(), f.currency.as_deref()), (Some("OK"), None), "{}", io.said);
+        let mut io = Script::new(&["no", "n", "ok", "n", "xz", "n"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 1, "three declined bare codes exhaust the 3 tries: {}", io.said);
+        assert!(io.written().is_none());
+        assert!(io.said.contains("cost tracking stays off"));
+    }
+
+    /// Card #525: a full country NAME, and a code the table lists, work exactly as before -
+    /// names with no extra question, and (per the brief) a listed code needs the confirmation
+    /// while an unlisted code's `y` records it as typed.
+    #[test]
+    fn a_known_country_name_or_code_still_works() {
+        // 'Germany' works directly: no confirmation is asked
+        let mut io = Script::new(&["Germany", "0,25"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        assert!(!io.said.contains("Is that the country code"), "a listed name needs no confirmation: {}", io.said);
+        let f = file(&io);
+        assert_eq!((f.country.as_deref(), f.currency.as_deref()), (Some("DE"), Some("EUR")));
+        // 'DE' then 'y' works
+        let mut io = Script::new(&["DE", "y", "0.25"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        assert!(io.said.contains("Is that the country code DE (Germany)? [y/N]"), "{}", io.said);
+        let f = file(&io);
+        assert_eq!((f.country.as_deref(), f.currency.as_deref()), (Some("DE"), Some("EUR")));
+        // 'bolivia' (an unlisted name, not a code shape) is still kept as typed, unasked
+        let mut io = Script::new(&["Bolivia", "0.9", "bob"]);
+        assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
+        assert!(!io.said.contains("Is that the country code"), "{}", io.said);
+        let f = lss_core::rates::read_rates_file(io.written().unwrap()).unwrap();
+        assert_eq!(f.country.as_deref(), Some("Bolivia"));
+    }
+
     // ---------------------------------------------------------- card #516
     #[test]
     fn cost_setup_asks_the_country_first() {
@@ -946,7 +1030,8 @@ mod tests {
         assert!(!io.said.contains("Choose 1-5") && !io.said.contains("ZIP"), "nothing else is asked before it: {}", io.said);
         assert!(io.written().is_none());
         // a rate typed at the country question is refused in words, then the country is read
-        let mut io = Script::new(&["0.25", "de", "0.25"]);
+        // (card #525: a bare code confirms once; `de` then `y`)
+        let mut io = Script::new(&["0.25", "de", "y", "0.25"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("'0.25' is not a country"), "{}", io.said);
         assert_eq!(parsed(&io).source.as_deref(), Some("entered by hand, Germany (2026-09-24)"));
@@ -980,19 +1065,21 @@ mod tests {
         assert_eq!(t.price_for(lss_core::rates::DayContext { hour: 18, is_summer: true, is_weekend_or_holiday: false }), Some((0.25, "flat")));
         assert_eq!(io.ip_calls, 0);
         // a bad answer is said back and asked again; 31 yen is 31, never 31 cents
-        let mut io = Script::new(&["jp", "abc", "31"]);
+        // (card #525: a bare code confirms once; `jp` then `y`)
+        let mut io = Script::new(&["jp", "y", "abc", "31"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         assert!(io.said.contains("'abc' is not a rate"), "{}", io.said);
         assert_eq!(parsed(&io).price_for(lss_core::rates::DayContext { hour: 0, is_summer: false, is_weekend_or_holiday: false }), Some((31.0, "flat")));
-        // three bad answers = exit 1, nothing written
-        let mut io = Script::new(&["fr", "x", "y", "z"]);
+        // three bad answers = exit 1, nothing written (card #525: a bare code confirms once)
+        let mut io = Script::new(&["fr", "y", "x", "y", "z", "y"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 1, "{}", io.said);
         assert!(io.written().is_none());
     }
 
     #[test]
     fn cost_setup_country_is_stored_in_rates_toml() {
-        let mut io = Script::new(&["uk", "0.30"]);
+        // card #525: a bare code ("uk" -> GB) confirms once; `uk` then `y`
+        let mut io = Script::new(&["uk", "y", "0.30"]);
         assert_eq!(run(&opts(Mode::Ask), &mut io), 0, "{}", io.said);
         let text = io.written().unwrap();
         assert!(text.contains("country = \"GB\"\n") && text.contains("currency = \"GBP\"\n"), "{text}");

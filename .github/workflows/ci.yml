@@ -70,6 +70,15 @@ jobs:
         run: |
           if git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then files=$(git diff --name-only "$BASE_SHA" HEAD); else files=$(git ls-files); fi
           if echo "$files" | grep -qE '^(crates/|fixtures/|packaging/|scripts/|install\.sh|Cargo\.|\.github/workflows/ci\.yml)'; then echo "run=true" >>"$GITHUB_OUTPUT"; else echo "run=false" >>"$GITHUB_OUTPUT"; fi
+      # card 820: the runner has no shellcheck (hosted ubuntu images did).
+      # Fetch the pinned static release into RUNNER_TEMP - no sudo, nothing installed on the host.
+      - name: ensure shellcheck
+        if: steps.changed.outputs.run == 'true'
+        run: |
+          if ! command -v shellcheck >/dev/null; then
+            curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz | tar -xJ -C "$RUNNER_TEMP"
+            echo "$RUNNER_TEMP/shellcheck-v0.10.0" >>"$GITHUB_PATH"
+          fi
       - name: shellcheck scripts/
         if: steps.changed.outputs.run == 'true'
         run: shellcheck --severity=warning scripts/*.sh install.sh

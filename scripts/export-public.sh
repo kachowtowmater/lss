@@ -187,6 +187,27 @@ if [ -f "$DEST/.github/workflows/ci.yml" ]; then
     mv "$DEST/.github/workflows/ci.yml.tmp" "$DEST/.github/workflows/ci.yml"
 fi
 
+# card #547: PR #19 moves our private CI to the SELF-HOSTED runner ([self-hosted, linux,
+# llm-server-status]). A stranger's copy has no such runner and every job would sit "Queued"
+# forever, so the exported ci.yml must say the label ANY hosted GitHub can give:
+# ubuntu-latest. The whole line is replaced, not edited inside the list - a different order or a
+# second label would keep a stale meaning - and indentation is kept by construction (the match is
+# anchored on leading spaces; substr prints the same prefix). Other runs-on lines (macos) are
+# untouched, but a COMMENT or STEP NAME that says the label in prose (the shellcheck step's card
+# #820 note) is reworded too: the label names infrastructure the public copy does not have, and
+# "is main green" in the exported copy is checked by grepping the whole workflows directory for
+# it. The step's conditional is untouched - it is about the shellcheck binary, not the runner.
+# EVERY workflow file gets the rewrite, not only ci.yml: PR #19 also moves release.yml's Linux job
+# to the runner, and publish-public.sh's P4 refuses any exported runs-on it does not recognise.
+for wf in "$DEST"/.github/workflows/*.yml "$DEST"/.github/workflows/*.yaml; do
+    [ -f "$wf" ] || continue
+    awk '
+        /^ *runs-on: *\[self-hosted, +linux, +llm-server-status\] *$/ { print substr($0, 1, length($0) - length(substr($0, match($0, /r/)))) "runs-on: ubuntu-latest"; next }
+        { gsub(/# card #[0-9]+: the self-hosted runner/, "# card 820: the runner"); gsub(/ensure shellcheck \(self-hosted runner\)/, "ensure shellcheck"); print }
+    ' "$wf" > "$wf.tmp"
+    mv "$wf.tmp" "$wf"
+done
+
 # card #144: packaging/privacy-words.example is a WORD LIST, so the privacy check exempts it
 # (it names what it forbids) - and it named everything: our hosts, model ids, agent names, the
 # GitHub account, the public domain, the utility and plan. Every export shipped it verbatim and

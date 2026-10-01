@@ -116,6 +116,9 @@ pub struct WindowStats {
     pub spec_by_level: Vec<(u64, f64)>,
     pub prefill_time_pct: Option<f64>,
     pub rejects: Vec<LaneRejects>,
+    /// no gateway is configured: the rejections rule is about a gateway's audit log, so the
+    /// all-clear finding ("The gateway turned nobody away") would claim a gateway that is not there
+    pub gate_absent: bool,
     pub growth: Option<Growth>,
     pub wh_per_mtok: Option<f64>,
     pub gen_tokens: Option<f64>,
@@ -298,7 +301,7 @@ pub fn evaluate(w: &WindowStats, cfg: &AdviceConfig) -> Vec<Finding> {
         let tail = if sev == Severity::Fine { "rare enough to ignore" } else if r.too_large_413 > r.too_busy_429 { "mostly oversized prompts: raise that lane's prompt limit if they are legitimate" } else { "mostly \"too busy\": raise that lane's limits or add capacity" };
         add("rejections", sev, format!("The {} lane turned away {:.0} request{} a day (too busy: {}, too large: {}) - {tail}.", r.lane, per_day, if per_day.round() == 1.0 { "" } else { "s" }, r.too_busy_429, r.too_large_413), Some(per_day), "per day", if sev == Severity::Fine { "" } else { "gateway lane limits" });
     }
-    if !w.rejects.is_empty() && w.rejects.iter().all(|r| r.too_busy_429 + r.too_large_413 == 0) {
+    if !w.rejects.is_empty() && w.rejects.iter().all(|r| r.too_busy_429 + r.too_large_413 == 0) && !w.gate_absent {
         add("rejections", Severity::Fine, format!("The gateway turned nobody away in {sp}."), Some(0.0), "per day", "");
     }
 
@@ -567,6 +570,29 @@ mod tests {
         assert_eq!((none.severity, none.sentence.as_str()), (Severity::Fine, "The gateway turned nobody away in the week."));
         let few = one(&WindowStats { rejects: vec![LaneRejects { lane: "public".into(), too_busy_429: 7, ..Default::default() }], ..week() }, "rejections");
         assert!(few.severity == Severity::Fine && few.sentence.contains("rare enough to ignore"));
+    }
+
+    /// #524: with NO gateway (gate_url = "") the audit log does not exist, so the all-clear
+    /// sentence would claim a gateway that is not there - the rule says nothing instead.
+    #[test]
+    fn advice_says_nothing_about_the_gateway_when_there_is_no_gateway() {
+        // the collector only fills `rejects` from the gate log, so with no gateway the rows are
+        // empty AND `gate_absent` silences the rule even if a stale row arrived
+        let absent = WindowStats { gate_absent: true, ..week() };
+        let findings = evaluate(&absent, &AdviceConfig::default());
+        assert!(findings.iter().all(|f| f.rule != "rejections"), "no gateway: no rejections finding, not even the all-clear: {findings:?}");
+        assert!(findings.is_empty(), "of nothing, with no gateway, nothing can be said yet: {findings:?}");
+        let stale = WindowStats { gate_absent: true, rejects: vec![LaneRejects { lane: "public".into(), ..Default::default() }], ..week() };
+        assert!(evaluate(&stale, &AdviceConfig::default()).iter().all(|f| f.rule != "rejections"), "a stale reject row with no gateway must not resurrect the claim");
+    }
+
+    /// #524, the other side: behind a real gateway the all-clear still shows even when nobody
+    /// was rejected - removing the claim would hide that the gateway's log was read.
+    #[test]
+    fn advice_still_says_the_gateway_turned_nobody_away_when_there_is_one() {
+        let none = WindowStats { rejects: vec![LaneRejects { lane: "public".into(), ..Default::default() }], ..week() };
+        let f = one(&none, "rejections");
+        assert_eq!((f.severity, f.sentence.as_str()), (Severity::Fine, "The gateway turned nobody away in the week."));
     }
 
     #[test]
