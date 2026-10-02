@@ -302,6 +302,9 @@ fn the_ci_strip_catches_a_gate_path_filter_shaped_differently_than_the_literal_c
     std::fs::create_dir_all(src.join("packaging")).unwrap();
     std::fs::create_dir_all(src.join(".github/workflows")).unwrap();
     std::fs::copy(repo().join("scripts/export-public.sh"), src.join("scripts/export-public.sh")).unwrap();
+    // card #553: export-public.sh sources scripts/export-excluded.sh beside itself (ONE shared
+    // exclusion list), so every synthetic source must carry that file like a real clone does
+    std::fs::copy(repo().join("scripts/export-excluded.sh"), src.join("scripts/export-excluded.sh")).unwrap();
     std::fs::copy(repo().join("scripts/privacy-check.sh"), src.join("scripts/privacy-check.sh")).unwrap();
     std::fs::copy(repo().join("packaging/privacy-words.example"), src.join("packaging/privacy-words.example")).unwrap();
     std::fs::write(src.join(".github/workflows/ci.yml"), "\
@@ -342,6 +345,9 @@ fn the_exported_ci_runs_strangers_on_ubuntu_latest_not_our_self_hosted_runner() 
     std::fs::create_dir_all(src.join("packaging")).unwrap();
     std::fs::create_dir_all(src.join(".github/workflows")).unwrap();
     std::fs::copy(repo().join("scripts/export-public.sh"), src.join("scripts/export-public.sh")).unwrap();
+    // card #553: export-public.sh sources scripts/export-excluded.sh beside itself (ONE shared
+    // exclusion list), so every synthetic source must carry that file like a real clone does
+    std::fs::copy(repo().join("scripts/export-excluded.sh"), src.join("scripts/export-excluded.sh")).unwrap();
     std::fs::copy(repo().join("scripts/privacy-check.sh"), src.join("scripts/privacy-check.sh")).unwrap();
     std::fs::copy(repo().join("packaging/privacy-words.example"), src.join("packaging/privacy-words.example")).unwrap();
     std::fs::write(src.join(".github/workflows/ci.yml"), "\
@@ -380,6 +386,9 @@ fn every_workflow_including_release_yml_runs_strangers_on_ubuntu_latest() {
     std::fs::create_dir_all(src.join("packaging")).unwrap();
     std::fs::create_dir_all(src.join(".github/workflows")).unwrap();
     std::fs::copy(repo().join("scripts/export-public.sh"), src.join("scripts/export-public.sh")).unwrap();
+    // card #553: export-public.sh sources scripts/export-excluded.sh beside itself (ONE shared
+    // exclusion list), so every synthetic source must carry that file like a real clone does
+    std::fs::copy(repo().join("scripts/export-excluded.sh"), src.join("scripts/export-excluded.sh")).unwrap();
     std::fs::copy(repo().join("scripts/privacy-check.sh"), src.join("scripts/privacy-check.sh")).unwrap();
     std::fs::copy(repo().join("packaging/privacy-words.example"), src.join("packaging/privacy-words.example")).unwrap();
     std::fs::write(src.join(".github/workflows/ci.yml"), "\
@@ -528,6 +537,10 @@ fn the_exported_docs_never_point_a_reader_at_a_path_the_export_does_not_carry() 
         // name those paths BECAUSE it drops them. Turning .rs on made the ruler read the ruler:
         // 28 of the 56 hits were this file reciting the very list it exists to enforce. A test
         // that fires on itself measures nothing.
+        // card #553, and it has exactly the property demanded above: it IS the exclusion
+        // machinery (ONE sourced excluded(), shared by export-public.sh and the privacy hook),
+        // so its comments name every dropped path BECAUSE it drops them.
+        "scripts/export-excluded.sh",
         "crates/lss-collector/tests/export_script.rs",
     ];
 
@@ -820,6 +833,9 @@ fn a_missing_private_word_list_refuses_to_export() {
     std::fs::create_dir_all(src.join("scripts")).unwrap();
     std::fs::create_dir_all(src.join("packaging")).unwrap();
     std::fs::copy(repo().join("scripts/export-public.sh"), src.join("scripts/export-public.sh")).unwrap();
+    // card #553: export-public.sh sources scripts/export-excluded.sh beside itself (ONE shared
+    // exclusion list), so every synthetic source must carry that file like a real clone does
+    std::fs::copy(repo().join("scripts/export-excluded.sh"), src.join("scripts/export-excluded.sh")).unwrap();
     std::fs::copy(repo().join("scripts/privacy-check.sh"), src.join("scripts/privacy-check.sh")).unwrap();
     std::fs::copy(repo().join("packaging/privacy-words.example"), src.join("packaging/privacy-words.example")).unwrap();
     std::fs::write(src.join("README.md"), "nothing private here\n").unwrap();

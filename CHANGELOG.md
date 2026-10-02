@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.3 (2026-10-01)
+
+- **#566: the v1.3.2 lock drift is fixed and the gate path is drift-proof.** Cargo.lock pins
+  lss/lss-core/lss-collector back to the workspace version, `scripts/remote-build.sh` runs every
+  cargo command `--locked` (so a build can no longer rewrite the lock behind a gate's back), and
+  `publish-public.sh` check P5b refuses a release whose lock version differs from Cargo.toml.
+- **#556: the MODEL compare picker follows the page ring.** With no gateway, Tab/Right land on
+  ALERTS instead of being a no-op; with a gateway, Tab/Right land on GATEWAY and BackTab/Left on
+  TOKENS — the same ring every other page walks.
+- **#553: the pre-commit privacy hook shares the export's exclusion list.** Both source
+  `scripts/export-excluded.sh`, so edits to export-excluded files (docs/serve/*, gate-deploy.sh,
+  …) commit without SKIP_PRIVACY_SCAN, while a new private word in a shipped file still blocks.
+
 ## v1.3.2 (2026-10-01)
 
 Fixes since v1.3.1. #546, #547, #523, #518, #468 are test/export hardening; the public CI now

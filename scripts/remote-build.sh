@@ -274,21 +274,19 @@ case "$CMD" in
   test)   rc=0
           for _tz in "$TEST_TZ" ${TEST_TZ2:+"$TEST_TZ2"}; do
             echo "=== cargo test --workspace under TZ=$_tz"
-            run "date && cargo test --workspace --no-fail-fast 2>&1" "-e TZ=$_tz" || { r=$?; [ "$rc" -eq 0 ] && rc=$r; }
+            run "date && cargo test --workspace --locked --no-fail-fast 2>&1" "-e TZ=$_tz" || { r=$?; [ "$rc" -eq 0 ] && rc=$r; }
           done
           [ "$rc" -eq 0 ] || exit "$rc" ;;
   # `rust:latest` ships WITHOUT clippy: install it when it is missing, so "clippy clean" can never
   # be a step that silently did not run (the last line printed is clippy's own version)
-  clippy) run "(cargo clippy --version >/dev/null 2>&1 || rustup component add clippy >/dev/null 2>&1) && cargo clippy --workspace --all-targets -- -D warnings 2>&1 && cargo clippy --version" ;;
+  clippy) run "(cargo clippy --version >/dev/null 2>&1 || rustup component add clippy >/dev/null 2>&1) && cargo clippy --workspace --locked --all-targets -- -D warnings 2>&1 && cargo clippy --version" ;;
   bless)  run "cargo test -p lss-core --test status_golden 2>&1; cargo test -p lss --test render overview_golden_renders 2>&1; cargo test -p lss --test render gpus_lines_golden_render 2>&1; chown -R \$(stat -c %u:%g /w) /w/fixtures" "-e LSS_BLESS=1"
           rsync -a --include='*_golden.json' --include='status_keys_baseline.txt' --include='renders/' --include='renders/*.txt' --exclude='*' "$HOST:$REMOTE_DIR/fixtures/" "$REPO/fixtures/" ;;
   build)  ssh "$HOST" "cd $REMOTE_DIR && chmod -f u+w Cargo.lock 2>/dev/null; true"
-          run "cargo build --release --target x86_64-unknown-linux-musl -p lss-collector -p lss 2>&1 && mkdir -p dist && cp target/x86_64-unknown-linux-musl/release/lss-collector target/x86_64-unknown-linux-musl/release/lss dist/ && chown -R \$(stat -c %u:%g /w) dist" ;;
+          run "cargo build --release --locked --target x86_64-unknown-linux-musl -p lss-collector -p lss 2>&1 && mkdir -p dist && cp target/x86_64-unknown-linux-musl/release/lss-collector target/x86_64-unknown-linux-musl/release/lss dist/ && chown -R \$(stat -c %u:%g /w) dist" ;;
   *) echo "usage: $0 test|clippy|build|bless" >&2; exit 2 ;;
 esac
-# the lock file is generated on the build host: bring it home so it is committed. Not with --ref:
-# $REPO is then a throwaway archive of a past commit, and a pinned VERIFICATION must not write
-# anything back into the tree it was asked to judge.
-if [ -z "$SHA" ]; then
-    rsync -a "$HOST:$REMOTE_DIR/Cargo.lock" "$REPO/Cargo.lock" 2>/dev/null || true
-fi
+# #566: the lock write-back is gone. Every cargo invocation above is --locked, so a build can
+# never change Cargo.lock; what kept this file honest now keeps it from going stale and silently
+# REFUSING (the CI cargo commands run --locked): lock updates are an explicit
+# `cargo update --workspace` on the build host, committed together with Cargo.toml.

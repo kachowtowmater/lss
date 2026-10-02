@@ -17,9 +17,9 @@
 #                         plain `git commit --no-verify` also skips - the pre-push hook
 #                         and CI are the binding layer for that escape.
 #
-# WHAT IS SCANNED: only STAGED files, and never the paths the public export excludes anyway
-# (gate/*, site/ours/*, .privacy-words - keep this list in step with excluded() in
-# scripts/export-public.sh, which is the single source of truth for "what ships"). A bare
+# WHAT IS SCANNED: only STAGED files, and never the paths the public export excludes anyway -
+# the ONE shared definition is sourced from scripts/export-excluded.sh below (card #553; keep
+# new exclusions THERE, it is the single source of truth for "what ships"). A bare
 # `bash scripts/privacy-check.sh .` over the whole repo legitimately exits 1 (gate/tests'
 # fake IPs, gate/DEPLOY.md's real deploy vocabulary) - scoping here is what keeps the hook
 # from blocking every commit while still guarding everything that could be published.
@@ -41,13 +41,15 @@ cd "$repo"
 staged=$(git diff --cached --name-only --diff-filter=ACMR || true)
 [ -n "$staged" ] && [ "$staged" != "" ] || exit 0
 
-# the export's exclusion list (keep in step with excluded() in scripts/export-public.sh):
-# gate/* and site/* never ship, and .privacy-words is personal.
+# the export's exclusion list: ONE shared definition now, in scripts/export-excluded.sh
+# (card #553) - gate/* and site/* never ship, and .privacy-words is personal. Sourcing the
+# export's own list means an entry added to excluded() automatically stops being scanned here
+# too, instead of needing this hook's old hand-copied case to be kept in step by hand.
+# shellcheck source=scripts/export-excluded.sh
+source "$repo/scripts/export-excluded.sh"
 scan_list=""
 while IFS= read -r f; do
-    case "$f" in
-        gate/*|site/*|.privacy-words) continue ;;
-    esac
+    excluded "$f" && continue
     # card #148: test the INDEX, not the working tree. Everything else here reads the index
     # (`git show ":$f"` below), but this line used `[ -f "$f" ]` - a WORKING-TREE test - so a file
     # that was staged and then deleted from the tree (`git rm --cached`-less: `rm f` after

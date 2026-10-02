@@ -692,8 +692,11 @@ impl App {
                         KeyCode::Enter => self.compare_open = !self.compare_open,
                         KeyCode::Up => self.compare_sel = (self.compare_sel + n - 1) % n,
                         KeyCode::Down => self.compare_sel = (self.compare_sel + 1) % n,
-                        KeyCode::Tab | KeyCode::Right => self.open(PageId::Model.next()),
-                        KeyCode::BackTab | KeyCode::Left => self.open(PageId::Tokens),
+                        // #556: the compare picker used to hard-wire Tab to PageId::Model.next()
+                        // (GATEWAY) and BackTab to TOKENS - but open() refuses a hidden page, so
+                        // with no gateway Tab did nothing. Walk the same ring as every other page.
+                        KeyCode::Tab | KeyCode::Right => self.open_next_in_ring(),
+                        KeyCode::BackTab | KeyCode::Left => self.open_prev_in_ring(),
                         _ => {}
                     }
                 }

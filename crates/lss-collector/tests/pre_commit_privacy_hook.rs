@@ -24,6 +24,9 @@ fn scratch_repo(name: &str) -> PathBuf {
     std::fs::copy(repo().join("scripts/hooks/pre-commit-privacy"), dir.join("scripts/hooks/pre-commit-privacy")).unwrap();
     // the hook shells out to privacy-check.sh: a real clone has it, so the fixture must too
     std::fs::copy(repo().join("scripts/privacy-check.sh"), dir.join("scripts/privacy-check.sh")).unwrap();
+    // card #553: the hook sources scripts/export-excluded.sh beside itself, so the fixture - like
+    // a real clone - must carry both files
+    std::fs::copy(repo().join("scripts/export-excluded.sh"), dir.join("scripts/export-excluded.sh")).unwrap();
     std::fs::copy(repo().join("packaging/privacy-words.example"), dir.join("packaging/privacy-words.example")).unwrap();
     // install it the way its own header says: a real `pre-commit` in .git/hooks
     let hook = dir.join(".git/hooks/pre-commit");
@@ -105,6 +108,8 @@ fn scripts_install_privacy_hook_actually_wires_up_the_block() {
     std::fs::create_dir_all(dir.join("scripts/hooks")).unwrap();
     std::fs::create_dir_all(dir.join("packaging")).unwrap();
     std::fs::copy(repo().join("scripts/hooks/pre-commit-privacy"), dir.join("scripts/hooks/pre-commit-privacy")).unwrap();
+    // card #553: the hook sources scripts/export-excluded.sh beside itself (same as a real clone)
+    std::fs::copy(repo().join("scripts/export-excluded.sh"), dir.join("scripts/export-excluded.sh")).unwrap();
     std::fs::copy(repo().join("scripts/privacy-check.sh"), dir.join("scripts/privacy-check.sh")).unwrap();
     std::fs::copy(repo().join("scripts/install-privacy-hook.sh"), dir.join("scripts/install-privacy-hook.sh")).unwrap();
     std::fs::copy(repo().join("packaging/privacy-words.example"), dir.join("packaging/privacy-words.example")).unwrap();
@@ -138,6 +143,69 @@ fn scripts_install_privacy_hook_actually_wires_up_the_block() {
     let (code, text) = commit(&dir, "protected");
     assert_ne!(code, 0, "after scripts/install-privacy-hook.sh, the same commit must now be blocked:\n{text}");
     assert!(text.contains(&word) || text.to_lowercase().contains("private"), "{text}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_edit_to_an_export_excluded_file_commits_without_a_skip() {
+    // card #553, the defect that opened it: the 405-repro reproducer script is EXCLUDED from
+    // the public export (the whole serve-notes directory in excluded()), but the hook hand-kept
+    // only 3 of those entries, so an edit to the file - on lines a stranger never sees - was
+    // blocked by its pre-existing private words, and the only way through was the loud
+    // SKIP_PRIVACY_SCAN=1 bypass (which also hides real hits in files that DO ship). The hook
+    // now sources the export's own excluded(), so anything the export drops is not scanned here
+    // either. The scratch repo does not carry the excluded file itself (only the hook, the
+    // check and the word list are copied in), so the fixture exercises the PATH rule with its
+    // own excluded-named file - and a control proves the same content in a shipped path blocks.
+    let word = ["zebra", "host", "77"].concat();
+    let dir = scratch_repo("excluded-edit");
+
+    let write_and_add = |rel: &str| {
+        std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(rel), format!("# a private edit naming {word}\n")).unwrap();
+        let out = Command::new("git").args(["add", rel]).current_dir(&dir).output().expect("git runs");
+        assert!(out.status.success(), "git add {rel}");
+    };
+
+    // the export-excluded path commits with no bypass and no scan of its content
+    write_and_add("docs/serve/405-repro.sh");
+    let (code, text) = commit(&dir, "an edit to an export-excluded file");
+    assert_eq!(code, 0, "an edit to a file the export excludes must commit WITHOUT SKIP_PRIVACY_SCAN:\n{text}");
+
+    // CONTROL, same content, shipped path: blocked. Proves the commit above went through
+    // because of the exclusion, not because the hook stopped scanning.
+    let _ = Command::new("git").args(["reset", "-q", "HEAD", "--", "docs/serve/405-repro.sh"]).current_dir(&dir).output();
+    write_and_add("README.md");
+    let (code, text) = commit(&dir, "the same edit in a shipped file");
+    assert_ne!(code, 0, "the same content in a SHIPPED path must still be blocked:\n{text}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_new_private_word_in_a_shipped_file_still_blocks_the_commit() {
+    // card #553, the other half: sharing the export's list must not WIDEN the blind spot. A
+    // brand-new private word added to a file the export SHIPS is still scanned and still blocks;
+    // sharing the exclusion list only ever narrowed what is scanned, never what the scan sees.
+    // The word is invented here (never a real entry), and is seeded into the scratch repo's own
+    // committed fallback list - made-up, like every word in this suite - so the scan sees it.
+    let word = ["quokka", "wren", "553"].concat();
+    let dir = scratch_repo("new-word-shipped");
+    std::fs::write(dir.join("packaging/privacy-words.example"), format!("{word}\n")).unwrap();
+    let add = Command::new("git").args(["add", "packaging/privacy-words.example"]).current_dir(&dir).output().expect("git runs");
+    assert!(add.status.success());
+    // the seed commit itself is allowed to bypass: the hook reads the fallback list, and the
+    // list's own edit is a change to a SHIPPED file carrying the word - the next commit proves
+    // the block works on everything else
+    let _ = Command::new("git").args(["commit", "-q", "--no-verify", "-m", "seed the invented word"]).current_dir(&dir).output();
+
+    std::fs::write(dir.join("README.md"), format!("added line naming {word}\n")).unwrap();
+    let out = Command::new("git").args(["add", "README.md"]).current_dir(&dir).output().expect("git runs");
+    assert!(out.status.success());
+    let (code, text) = commit(&dir, "a new private word in a shipped file");
+    assert_ne!(code, 0, "a NEW private word added to a SHIPPED file must still block:\n{text}");
+    assert!(text.contains(&word), "the block must name the hit:\n{text}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

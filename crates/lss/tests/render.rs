@@ -2046,6 +2046,47 @@ fn gateway_pages_are_shown_when_gate_url_is_set() {
     assert_eq!(lss::ui::help_groups(false), fixed, "with a gateway the help is the static table, unchanged");
 }
 
+/// Card #556: the MODEL page's compare picker walks the SAME Tab ring as every other page, for
+/// BOTH key pairs - Tab/Right step forward, BackTab/Left step back. With no gateway the ring
+/// skips GATEWAY, so forward from MODEL lands on ALERTS and back lands on TOKENS - it used to
+/// hard-wire `PageId::Model.next()` (GATEWAY) and `open()` refused the hidden page, so forward
+/// did nothing while the picker was open.
+#[test]
+fn model_compare_tab_steps_past_hidden_gateway_page() {
+    let (mut a, _) = app(strangers_machine());
+    // Tab (and Right) step forward past the hidden GATEWAY to ALERTS
+    for key in [KeyCode::Tab, KeyCode::Right] {
+        a.on_key(KeyCode::Char('6'));
+        assert_eq!(a.view, View::Page(PageId::Model), "6 opens MODEL");
+        a.on_key(KeyCode::Enter);
+        assert!(a.compare_open, "Enter opens the compare picker");
+        a.on_key(key);
+        assert_eq!(a.view, View::Page(PageId::Alerts), "{key:?} from the compare picker steps past the hidden GATEWAY to ALERTS");
+        assert!(!a.compare_open, "leaving MODEL closes the compare picker");
+    }
+    // BackTab (and Left) step back to TOKENS, the ring's previous visible page
+    for key in [KeyCode::BackTab, KeyCode::Left] {
+        a.on_key(KeyCode::Char('6'));
+        a.on_key(KeyCode::Enter);
+        assert!(a.compare_open, "Enter reopens the compare picker");
+        a.on_key(key);
+        assert_eq!(a.view, View::Page(PageId::Tokens), "{key:?} from the compare picker steps to TOKENS");
+    }
+}
+
+/// Card #556, the other side: with a gateway configured GATEWAY is in the ring, so Tab from the
+/// compare picker lands on it exactly as it does from any other page.
+#[test]
+fn model_compare_tab_lands_on_gateway_when_there_is_one() {
+    let (mut a, _) = app(golden());
+    assert!(!a.status.as_ref().unwrap().gate.absent, "golden() has a gateway");
+    a.on_key(KeyCode::Char('6'));
+    a.on_key(KeyCode::Enter);
+    assert!(a.compare_open, "Enter opens the compare picker");
+    a.on_key(KeyCode::Tab);
+    assert_eq!(a.view, View::Page(PageId::Gateway), "Tab from the compare picker lands on GATEWAY");
+}
+
 /// Card #513: a stranger's install with no gateway (a stock SGLang/vLLM/Ollama, no gate_url) is
 /// not a fault. Both overview shapes say the one plain line, "no gateway configured", where the
 /// gateway's boxes would be - dim, never red - and none of "error", "failed", "unreachable"
